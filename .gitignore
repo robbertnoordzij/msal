@@ -1,0 +1,45 @@
+# Node modules
+frontend/node_modules/
+frontend/.env.local
+frontend/build/
+
+# Auto-generated configuration files (generated from .env)
+frontend/src/config/msalConfig.js
+backend/src/main/resources/application.properties
+backend/target/classes/application.properties
+
+# Maven
+backend/target/
+backend/.mvn/
+backend/mvnw
+backend/mvnw.cmd
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+!.env.example
+
+# Java
+*.class
+*.jar
+!maven-wrapper.jar
+
+# Spring Boot
+BOOT-INF/

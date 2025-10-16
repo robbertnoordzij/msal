@@ -1,0 +1,37 @@
+# Application Configuration Template
+# This file is auto-generated from .env - DO NOT EDIT MANUALLY
+# Run './configure.ps1' to regenerate
+
+# To generate this file:
+# 1. Copy .env.example to .env
+# 2. Fill in your Azure AD credentials in .env
+# 3. Run: .\configure.ps1 (from root directory)
+#    OR: .\runall.ps1 (from root directory - includes config generation)
+
+spring.application.name=msal-bff
+
+# Server Configuration
+server.port=8080
+server.servlet.context-path=/api
+
+# Azure AD Configuration - VALUES FROM .env
+azure.activedirectory.tenant-id=YOUR_TENANT_ID_FROM_ENV
+azure.activedirectory.client-id=YOUR_CLIENT_ID_FROM_ENV
+azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/${azure.activedirectory.tenant-id}/discovery/v2.0/keys
+
+# Cookie Configuration - VALUES FROM .env
+app.cookie.name=AUTH_TOKEN
+app.cookie.max-age=3600
+app.cookie.secure=false
+app.cookie.same-site=Lax
+app.cookie.http-only=true
+
+# CORS Configuration - VALUES FROM .env
+app.cors.allowed-origins=http://localhost:3000
+app.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
+app.cors.allowed-headers=*
+app.cors.allow-credentials=true
+
+# Logging - VALUES FROM .env
+logging.level.com.example=DEBUG
+logging.level.org.springframework.security=DEBUG

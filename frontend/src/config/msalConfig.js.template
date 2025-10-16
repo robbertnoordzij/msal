@@ -1,0 +1,58 @@
+// MSAL Configuration Template
+// This file is auto-generated from .env - DO NOT EDIT MANUALLY
+// Run './configure.ps1' or 'npm run config' to regenerate
+
+// To generate this file:
+// 1. Copy .env.example to .env
+// 2. Fill in your Azure AD credentials in .env
+// 3. Run: npm run config (from frontend directory)
+//    OR: .\configure.ps1 (from root directory)
+//    OR: .\runall.ps1 (from root directory - includes config generation)
+
+export const msalConfig = {
+  auth: {
+    clientId: "YOUR_CLIENT_ID_FROM_ENV",
+    authority: "https://login.microsoftonline.com/YOUR_TENANT_ID_FROM_ENV",
+    redirectUri: window.location.origin,
+    postLogoutRedirectUri: window.location.origin,
+  },
+  cache: {
+    cacheLocation: "none",
+    storeAuthStateInCookie: true,
+  },
+  system: {
+    loggerOptions: {
+      loggerCallback: (level, message, containsPii) => {
+        if (containsPii) return;
+        switch (level) {
+          case "Error":
+            console.error(message);
+            return;
+          case "Info":
+            console.info(message);
+            return;
+          case "Verbose":
+            console.debug(message);
+            return;
+          case "Warning":
+            console.warn(message);
+            return;
+          default:
+            return;
+        }
+      },
+    },
+  },
+};
+
+export const loginRequest = {
+  scopes: ["openid", "profile", "User.Read"],
+};
+
+export const apiConfig = {
+  baseUrl: "/api",
+  endpoints: {
+    hello: "/hello",
+    login: "/auth/login",
+  },
+};
