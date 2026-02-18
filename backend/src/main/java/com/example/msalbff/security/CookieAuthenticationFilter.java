@@ -51,9 +51,10 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
         
         if (token != null && tokenValidationService.validateToken(token)) {
             try {
-                // For development - create a simple authentication object
-                // In production, you'd parse the JWT properly
-                String username = "remco@azureholic.com"; // From the JWT we saw in logs
+                // Parse the JWT to get user information
+                org.springframework.security.oauth2.jwt.Jwt jwt = tokenValidationService.parseToken(token);
+                String username = tokenValidationService.getUserName(jwt);
+                
                 UsernamePasswordAuthenticationToken authentication = 
                     new UsernamePasswordAuthenticationToken(
                         username, 

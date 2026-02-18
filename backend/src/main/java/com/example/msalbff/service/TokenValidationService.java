@@ -7,6 +7,8 @@ import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.stereotype.Service;
 
+import com.nimbusds.jwt.SignedJWT;
+
 import jakarta.annotation.PostConstruct;
 import java.time.Instant;
 
@@ -159,15 +161,24 @@ public class TokenValidationService {
     }
 
     /**
-     * Extracts user information from a valid JWT token
+     * Extracts user information from any well-formed JWT token without validation
      * @param token The JWT token
      * @return JWT object with user claims
      */
     public Jwt parseToken(String token) {
         try {
-            return jwtDecoder.decode(token);
+            // Parse the token without validation using Nimbus
+            SignedJWT signedJWT = SignedJWT.parse(token);
+            
+            return new Jwt(
+                token,
+                signedJWT.getJWTClaimsSet().getIssueTime() != null ? signedJWT.getJWTClaimsSet().getIssueTime().toInstant() : null,
+                signedJWT.getJWTClaimsSet().getExpirationTime() != null ? signedJWT.getJWTClaimsSet().getExpirationTime().toInstant() : null,
+                signedJWT.getHeader().toJSONObject(),
+                signedJWT.getJWTClaimsSet().getClaims()
+            );
         } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid JWT token", e);
+            throw new IllegalArgumentException("Invalid JWT token format", e);
         }
     }
 
