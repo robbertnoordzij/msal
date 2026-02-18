@@ -13,10 +13,11 @@ const api = axios.create({
 // API service for authentication
 export const authService = {
   // Send token to backend to set in HTTP-only cookie
-  setTokenCookie: async (accessToken) => {
+  setTokenCookie: async (accessToken, refreshToken) => {
     try {
       const response = await api.post(apiConfig.endpoints.login, {
         accessToken,
+        refreshToken,
       });
       return response.data;
     } catch (error) {

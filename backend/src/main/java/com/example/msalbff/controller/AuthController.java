@@ -64,6 +64,13 @@ public class AuthController {
             Cookie authCookie = createAuthCookie(accessToken);
             response.addCookie(authCookie);
 
+            // Create HTTP-only cookie with the refresh token if provided
+            if (loginRequest.getRefreshToken() != null && !loginRequest.getRefreshToken().isEmpty()) {
+                Cookie refreshCookie = createRefreshCookie(loginRequest.getRefreshToken());
+                response.addCookie(refreshCookie);
+                logger.info("Successfully set refresh token cookie for user");
+            }
+
             logger.info("Successfully set authentication cookie for user");
             return ResponseEntity.ok(ApiResponse.success("Authentication token set successfully"));
 
@@ -83,11 +90,14 @@ public class AuthController {
     @PostMapping("/logout")
     public ResponseEntity<ApiResponse<Void>> logout(HttpServletResponse response) {
         try {
-            // Create expired cookie to clear the authentication
-            Cookie expiredCookie = createExpiredAuthCookie();
-            response.addCookie(expiredCookie);
+            // Create expired cookies to clear the authentication
+            Cookie expiredAuthCookie = createExpiredAuthCookie();
+            response.addCookie(expiredAuthCookie);
+            
+            Cookie expiredRefreshCookie = createExpiredRefreshCookie();
+            response.addCookie(expiredRefreshCookie);
 
-            logger.info("Successfully cleared authentication cookie");
+            logger.info("Successfully cleared authentication cookies");
             return ResponseEntity.ok(ApiResponse.success("Logged out successfully"));
 
         } catch (Exception e) {
@@ -114,10 +124,35 @@ public class AuthController {
     }
 
     /**
+     * Creates a secure HTTP-only cookie with the refresh token
+     */
+    private Cookie createRefreshCookie(String token) {
+        Cookie cookie = new Cookie(appProperties.getCookie().getRefreshName(), token);
+        cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
+        cookie.setSecure(appProperties.getCookie().isSecure());
+        cookie.setPath("/");
+        cookie.setMaxAge(appProperties.getCookie().getRefreshMaxAge());
+        return cookie;
+    }
+
+    /**
      * Creates an expired cookie to clear authentication
      */
     private Cookie createExpiredAuthCookie() {
         Cookie cookie = new Cookie(appProperties.getCookie().getName(), "");
+        cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
+        cookie.setSecure(appProperties.getCookie().isSecure());
+        cookie.setPath("/");
+        cookie.setMaxAge(0); // Expire immediately
+        
+        return cookie;
+    }
+
+    /**
+     * Creates an expired cookie to clear refresh token
+     */
+    private Cookie createExpiredRefreshCookie() {
+        Cookie cookie = new Cookie(appProperties.getCookie().getRefreshName(), "");
         cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
         cookie.setSecure(appProperties.getCookie().isSecure());
         cookie.setPath("/");

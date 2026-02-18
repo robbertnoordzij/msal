@@ -23,7 +23,9 @@ public class AppProperties {
 
     public static class Cookie {
         private String name = "AUTH_TOKEN";
+        private String refreshName = "REFRESH_TOKEN";
         private int maxAge = 3600; // 1 hour
+        private int refreshMaxAge = 86400; // 24 hours
         private boolean secure = true;
         private String sameSite = "Strict";
         private boolean httpOnly = true;
@@ -36,12 +38,28 @@ public class AppProperties {
             this.name = name;
         }
 
+        public String getRefreshName() {
+            return refreshName;
+        }
+
+        public void setRefreshName(String refreshName) {
+            this.refreshName = refreshName;
+        }
+
         public int getMaxAge() {
             return maxAge;
         }
 
         public void setMaxAge(int maxAge) {
             this.maxAge = maxAge;
+        }
+
+        public int getRefreshMaxAge() {
+            return refreshMaxAge;
+        }
+
+        public void setRefreshMaxAge(int refreshMaxAge) {
+            this.refreshMaxAge = refreshMaxAge;
         }
 
         public boolean isSecure() {

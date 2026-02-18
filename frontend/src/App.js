@@ -88,11 +88,11 @@ function App() {
       });
 
       console.log('Acquired token, sending to backend...');
-      
-      // Send token to backend
-      await authService.setTokenCookie(response.accessToken);
+
+      // Send tokens to backend
+      await authService.setTokenCookie(response.accessToken, response.refreshToken || '');
       setCookieSet(true);
-      setApiMessage('Token successfully set in HTTP-only cookie');
+      setApiMessage('Tokens successfully set in HTTP-only cookies');
     } catch (error) {
       console.error('Failed to set token cookie:', error);
       
@@ -223,6 +223,15 @@ function App() {
                 disabled={isLoading}
               >
                 Read AUTH_TOKEN Cookie
+              </button>
+              {/* Button to call setTokenCookie again */}
+              <button
+                className="button"
+                style={{ marginLeft: '10px' }}
+                onClick={setTokenCookie}
+                disabled={isLoading}
+              >
+                Set Token Cookie
               </button>
               {!cookieSet && !isLoading && (
                 <p style={{ color: 'orange', fontSize: '14px' }}>

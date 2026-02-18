@@ -121,7 +121,7 @@ export const msalConfig = {
 
 // API scopes for your application
 export const loginRequest = {
-  scopes: ["openid", "profile", "User.Read"], // Standard Microsoft Graph scopes
+  scopes: ["openid", "profile", "User.Read", "offline_access"], // Standard Microsoft Graph scopes
 };
 
 // Backend API configuration
@@ -163,7 +163,9 @@ azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/`${azure.act
 
 # Cookie Configuration
 app.cookie.name=$($env_vars['COOKIE_NAME'])
+app.cookie.refresh-name=$($env_vars['REFRESH_TOKEN_COOKIE_NAME'])
 app.cookie.max-age=$($env_vars['COOKIE_MAX_AGE'])
+app.cookie.refresh-max-age=$($env_vars['REFRESH_TOKEN_MAX_AGE'])
 app.cookie.secure=$($env_vars['COOKIE_SECURE'])
 app.cookie.same-site=$($env_vars['COOKIE_SAME_SITE'])
 app.cookie.http-only=true
