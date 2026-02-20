@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { authService } from './services/authService';
 
 function App() {
@@ -24,6 +24,28 @@ function App() {
   const [error, setError] = useState('');
   const [cookieSet, setCookieSet] = useState(false);
 
+  // Automatically handle login result from URL parameters or check initial auth status
+  useEffect(() => {
+    const queryParams = new URLSearchParams(window.location.search);
+    const loginStatus = queryParams.get('login');
+
+    if (loginStatus === 'success') {
+      console.log('Login successful, calling hello endpoint...');
+      callHelloEndpoint();
+      // Remove query parameter from URL without refreshing
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (loginStatus === 'error') {
+      console.error('Login failed');
+      setError('Login failed. Please try again.');
+      // Remove query parameter from URL without refreshing
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+      // No login parameters, check if already authenticated silently
+      console.log('No login status in URL, checking current auth status...');
+      callHelloEndpoint(true);
+    }
+  }, []);
+
   const handleLogin = () => {
     authService.startLogin();
   };
@@ -43,20 +65,24 @@ function App() {
   };
 
   // Call protected API endpoint
-  const callHelloEndpoint = async () => {
+  const callHelloEndpoint = async (isInitialCheck = false) => {
     try {
       setIsLoading(true);
-      setError('');
+      if (!isInitialCheck) setError('');
 
       const response = await authService.getHelloMessage();
       setApiMessage(JSON.stringify(response, null, 2));
       setCookieSet(true);
     } catch (error) {
       console.error('API call failed:', error);
-      setError('API call failed: ' + error.message);
+      if (!isInitialCheck) {
+        setError('API call failed: ' + error.message);
+      }
       if (error.response?.status === 401) {
         setCookieSet(false);
-        setError('Authentication required. Please sign in first.');
+        if (!isInitialCheck) {
+          setError('Authentication required. Please sign in first.');
+        }
       }
     } finally {
       setIsLoading(false);
