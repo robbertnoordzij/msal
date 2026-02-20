@@ -15,6 +15,7 @@ backend/mvnw
 backend/mvnw.cmd
 
 # IDE files
+out/
 .vscode/
 .idea/
 *.iml

@@ -168,6 +168,14 @@ azure.activedirectory.tenant-id=$AZURE_TENANT_ID
 azure.activedirectory.client-id=$AZURE_CLIENT_ID
 azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/\${azure.activedirectory.tenant-id}/discovery/v2.0/keys
 
+# BFF Client Settings
+app.azure-ad.client-id=$AZURE_CLIENT_ID
+app.azure-ad.tenant-id=$AZURE_TENANT_ID
+app.azure-ad.client-secret=${AZURE_CLIENT_SECRET:-}
+app.azure-ad.authority=https://login.microsoftonline.com/\${app.azure-ad.tenant-id}
+app.azure-ad.redirect-uri=${BACKEND_URL:-http://localhost:8080}${BACKEND_CONTEXT_PATH:-/api}/auth/callback
+app.azure-ad.scopes=openid profile offline_access User.Read
+
 # Cookie Configuration
 app.cookie.name=${COOKIE_NAME:-AUTH_TOKEN}
 app.cookie.refresh-name=${REFRESH_TOKEN_COOKIE_NAME:-REFRESH_TOKEN}

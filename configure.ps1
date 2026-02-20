@@ -161,6 +161,14 @@ azure.activedirectory.tenant-id=$($env_vars['AZURE_TENANT_ID'])
 azure.activedirectory.client-id=$($env_vars['AZURE_CLIENT_ID'])
 azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/`${azure.activedirectory.tenant-id}/discovery/v2.0/keys
 
+# BFF Client Settings
+app.azure-ad.client-id=$($env_vars['AZURE_CLIENT_ID'])
+app.azure-ad.tenant-id=$($env_vars['AZURE_TENANT_ID'])
+app.azure-ad.client-secret=$($env_vars['AZURE_CLIENT_SECRET'])
+app.azure-ad.authority=https://login.microsoftonline.com/`${app.azure-ad.tenant-id}
+app.azure-ad.redirect-uri=$($env_vars['BACKEND_URL'])$($env_vars['BACKEND_CONTEXT_PATH'])/auth/callback
+app.azure-ad.scopes=openid profile offline_access User.Read
+
 # Cookie Configuration
 app.cookie.name=$($env_vars['COOKIE_NAME'])
 app.cookie.refresh-name=$($env_vars['REFRESH_TOKEN_COOKIE_NAME'])

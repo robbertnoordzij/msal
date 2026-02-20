@@ -62,8 +62,8 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
                         new ArrayList<>() // No authorities for now
                     );
                 
-                // Add token as details for potential use in controllers
-                authentication.setDetails(token);
+                // Add JWT as details for use in controllers
+                authentication.setDetails(jwt);
                 
                 // Set authentication in security context
                 SecurityContextHolder.getContext().setAuthentication(authentication);

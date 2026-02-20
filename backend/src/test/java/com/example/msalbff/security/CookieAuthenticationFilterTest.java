@@ -69,7 +69,7 @@ public class CookieAuthenticationFilterTest {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         assertNotNull(auth);
         assertEquals("real-user@example.com", auth.getName());
-        assertEquals("valid-token", auth.getDetails());
+        assertSame(jwt, auth.getDetails());
         verify(filterChain).doFilter(request, response);
     }
 

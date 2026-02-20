@@ -59,6 +59,13 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
         
+        <!-- MSAL Java for backend token handling -->
+        <dependency>
+            <groupId>com.microsoft.azure</groupId>
+            <artifactId>msal4j</artifactId>
+            <version>1.17.2</version>
+        </dependency>
+        
         <!-- Spring Boot Configuration Processor -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

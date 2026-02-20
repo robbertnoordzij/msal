@@ -12,18 +12,9 @@ const api = axios.create({
 
 // API service for authentication
 export const authService = {
-  // Send token to backend to set in HTTP-only cookie
-  setTokenCookie: async (accessToken, refreshToken) => {
-    try {
-      const response = await api.post(apiConfig.endpoints.login, {
-        accessToken,
-        refreshToken,
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Error setting token cookie:', error);
-      throw error;
-    }
+  // Start login by redirecting to backend (BFF) which handles auth code flow
+  startLogin: () => {
+    window.location.href = `${apiConfig.baseUrl}/auth/login`;
   },
 
   // Call protected endpoint using cookie authentication

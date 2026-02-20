@@ -15,9 +15,20 @@ server.port=8080
 server.servlet.context-path=/api
 
 # Azure AD Configuration - VALUES FROM .env
+# Legacy keys for JWT validation (kept for resource server validation)
 azure.activedirectory.tenant-id=YOUR_TENANT_ID_FROM_ENV
 azure.activedirectory.client-id=YOUR_CLIENT_ID_FROM_ENV
 azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/${azure.activedirectory.tenant-id}/discovery/v2.0/keys
+
+# BFF Client Settings. If app.azure-ad.client-secret is empty, PublicClientApplication is used.
+app.azure-ad.client-id=YOUR_CLIENT_ID_FROM_ENV
+app.azure-ad.tenant-id=${azure.activedirectory.tenant-id}
+app.azure-ad.client-secret=YOUR_CLIENT_SECRET_FROM_ENV
+app.azure-ad.authority=https://login.microsoftonline.com/${app.azure-ad.tenant-id}
+# Must match Azure app registration redirect URI (e.g., http://127.0.0.1:8080/api/auth/callback)
+app.azure-ad.redirect-uri=YOUR_BACKEND_URL_FROM_ENV/YOUR_CONTEXT_PATH_FROM_ENV/auth/callback
+# Space-separated scopes to request during sign-in
+app.azure-ad.scopes=openid profile offline_access User.Read
 
 # Cookie Configuration - VALUES FROM .env
 app.cookie.name=AUTH_TOKEN
