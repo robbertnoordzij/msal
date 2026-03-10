@@ -1,6 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { authService } from './services/authService';
 
+/**
+ * Returns a user-friendly error message based on the Axios error type.
+ */
+function getErrorMessage(error) {
+  if (error.response) {
+    if (error.response.status === 401) {
+      return 'Authentication expired. Please sign in again.';
+    }
+    return `API error: ${error.response.status}`;
+  } else if (error.request) {
+    return 'Network error: Could not reach backend. Is it running?';
+  } else if (error.code === 'ECONNABORTED') {
+    return 'Request timeout. Backend is slow to respond.';
+  }
+  return error.message || 'Unknown error';
+}
+
 function App() {
   const [apiMessage, setApiMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -13,21 +30,21 @@ function App() {
     const loginStatus = queryParams.get('login');
 
     if (loginStatus === 'success') {
-      console.log('Login successful, calling hello endpoint...');
       callHelloEndpoint();
-      // Remove query parameter from URL without refreshing
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (loginStatus === 'error') {
-      console.error('Login failed');
       setError('Login failed. Please try again.');
-      // Remove query parameter from URL without refreshing
       window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (loginStatus != null) {
+      // Unexpected value — clean up URL and proceed
+      console.warn('Unexpected login status parameter:', loginStatus);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      callHelloEndpoint(true);
     } else {
       // No login parameters, check if already authenticated silently
-      console.log('No login status in URL, checking current auth status...');
       callHelloEndpoint(true);
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogin = () => {
     authService.startLogin();
@@ -39,9 +56,10 @@ function App() {
       await authService.logout();
       setCookieSet(false);
       setApiMessage('');
-    } catch (error) {
-      console.error('Logout failed:', error);
-      setError('Logout failed: ' + error.message);
+    } catch (err) {
+      // authService.logout() no longer throws; this is a safety net
+      console.error('Logout failed:', err);
+      setError('Logout failed: ' + getErrorMessage(err));
     } finally {
       setIsLoading(false);
     }
@@ -54,18 +72,18 @@ function App() {
       if (!isInitialCheck) setError('');
 
       const response = await authService.getHelloMessage();
-      setApiMessage(JSON.stringify(response, null, 2));
-      setCookieSet(true);
-    } catch (error) {
-      console.error('API call failed:', error);
-      if (!isInitialCheck) {
-        setError('API call failed: ' + error.message);
+      if (typeof response === 'object' && response !== null) {
+        setApiMessage(JSON.stringify(response, null, 2));
+      } else {
+        setApiMessage(String(response));
       }
-      if (error.response?.status === 401) {
+      setCookieSet(true);
+    } catch (err) {
+      if (!isInitialCheck) {
+        setError(getErrorMessage(err));
+      }
+      if (err.response?.status === 401) {
         setCookieSet(false);
-        if (!isInitialCheck) {
-          setError('Authentication required. Please sign in first.');
-        }
       }
     } finally {
       setIsLoading(false);
@@ -82,6 +100,11 @@ function App() {
         </header>
 
         {/* Loading indicator */}
+        {isLoading && (
+          <div className="loading">
+            Processing request...
+          </div>
+        )}
 
         {/* Error display */}
         {error && (
@@ -113,9 +136,6 @@ function App() {
           {/* Authentication Status */}
           <div style={{ marginTop: '20px' }}>
             <h3>Authentication Status</h3>
-            {isLoading && (
-              <p style={{ color: 'orange' }}>Processing...</p>
-            )}
             {cookieSet ? (
               <div>
                 <p style={{ color: 'green' }}>✓ Secure authentication established</p>
@@ -161,13 +181,6 @@ function App() {
             </button>
           </div>
         </div>
-
-        {/* Loading indicator for API calls */}
-        {isLoading && (
-          <div className="loading">
-            Processing request...
-          </div>
-        )}
 
         {/* Information section */}
         <div style={{ marginTop: '40px', textAlign: 'left', fontSize: '14px', color: '#666' }}>

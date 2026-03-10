@@ -8,6 +8,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 30000, // Abort if backend doesn't respond within 30 seconds
 });
 
 // API service for authentication
@@ -21,6 +22,9 @@ export const authService = {
   getHelloMessage: async () => {
     try {
       const response = await api.get(apiConfig.endpoints.hello);
+      if (!response.data) {
+        throw new Error('Empty response from server');
+      }
       return response.data;
     } catch (error) {
       console.error('Error calling hello endpoint:', error);
@@ -34,8 +38,10 @@ export const authService = {
       const response = await api.post('/auth/logout');
       return response.data;
     } catch (error) {
-      console.error('Error during logout:', error);
-      throw error;
+      // Don't re-throw on logout failure: the cookie may already be cleared
+      // or the session may have expired. The caller should proceed.
+      console.warn('Logout error (session may already be invalid):', error.message);
+      return { success: false, message: error.message };
     }
   },
 };

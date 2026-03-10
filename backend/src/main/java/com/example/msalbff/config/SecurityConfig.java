@@ -57,6 +57,13 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource))
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .headers(headers -> headers
+                .frameOptions(frameOptions -> frameOptions.deny())
+                .contentTypeOptions(contentTypeOptions -> {})
+                .httpStrictTransportSecurity(hsts -> hsts
+                    .includeSubDomains(true)
+                    .maxAgeInSeconds(31536000))
+            )
             .authorizeHttpRequests(authz -> authz
                 .requestMatchers("/auth/**").permitAll()
                 .requestMatchers("/health").permitAll()

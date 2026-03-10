@@ -59,6 +59,10 @@ public class ApiController {
 
             // Extract user information from authentication
             String username = authentication.getName();
+            if (username == null || username.isBlank()) {
+                logger.warn("Authenticated user has no name");
+                username = "User";
+            }
             String greeting = String.format("Hello authenticated user: %s!", username);
 
             logger.info("Successfully served hello endpoint for user: {}", username);
@@ -86,8 +90,13 @@ public class ApiController {
                     .body(ApiResponse.error("Authentication required"));
             }
 
-            Jwt jwt = (Jwt) authentication.getDetails();
-            
+            Object details = authentication.getDetails();
+            if (!(details instanceof Jwt jwt)) {
+                logger.warn("Authentication details are not a JWT for user: {}", authentication.getName());
+                return ResponseEntity.status(500)
+                    .body(ApiResponse.error("Internal server error"));
+            }
+
             UserInfo userInfo = new UserInfo(
                 tokenValidationService.getUserName(jwt),
                 tokenValidationService.getUserEmail(jwt),

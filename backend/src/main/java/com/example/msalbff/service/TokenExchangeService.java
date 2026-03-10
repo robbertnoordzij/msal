@@ -135,6 +135,10 @@ public class TokenExchangeService {
     }
 
     public String generateAuthorizationUrl(String redirectUri, Set<String> scopes, String state, String codeChallenge) throws Exception {
+        if (codeChallenge == null || codeChallenge.length() < 43 || codeChallenge.length() > 128) {
+            throw new IllegalArgumentException("Invalid code challenge length: " +
+                (codeChallenge != null ? codeChallenge.length() : 0));
+        }
         AuthorizationRequestUrlParameters parameters = AuthorizationRequestUrlParameters
                 .builder(redirectUri, scopes)
                 .responseMode(ResponseMode.QUERY)

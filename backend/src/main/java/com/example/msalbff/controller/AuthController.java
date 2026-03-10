@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -49,6 +50,13 @@ public class AuthController {
     @GetMapping("/login")
     public void startLogin(HttpServletResponse response) {
         try {
+            Set<String> scopes = appProperties.getAzureAd().scopesAsSet();
+            if (!scopes.contains("openid")) {
+                logger.error("SECURITY: 'openid' scope is required for ID token. Current scopes: {}", scopes);
+                response.setStatus(500);
+                return;
+            }
+
             String state = UUID.randomUUID().toString();
             authCookieService.setOAuthStateCookie(response, state);
 
@@ -57,7 +65,7 @@ public class AuthController {
 
             String authUrl = tokenExchangeService.generateAuthorizationUrl(
                 appProperties.getAzureAd().getRedirectUri(),
-                appProperties.getAzureAd().scopesAsSet(),
+                scopes,
                 state,
                 generateCodeChallenge(codeVerifier));
             response.sendRedirect(authUrl);
@@ -82,8 +90,8 @@ public class AuthController {
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
-            if (code == null || code.isEmpty()) {
-                logger.warn("Callback received without authorization code");
+            if (code == null || code.trim().isEmpty() || code.length() > 1000) {
+                logger.warn("Invalid authorization code received: length={}", code != null ? code.length() : 0);
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }

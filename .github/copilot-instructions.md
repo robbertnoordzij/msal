@@ -133,3 +133,13 @@ SOLID, error handling, tests) to both the Java backend and JavaScript frontend.
 Use it when refactoring, adding new classes/components, or before merging a PR.
 Security improvements must never be sacrificed for cleanliness — the agent is
 aware of this constraint.
+
+### `codebase-assessor`
+
+Provides a structured quality assessment across three dimensions: **code
+quality**, **test quality**, and **architecture**. Each dimension is scored
+out of 10 with evidence-based findings classified by severity (🔴 Critical →
+🔵 Suggestion). Use it for periodic quality reviews, before major refactors,
+when onboarding new team members, or when building a technical debt backlog.
+Outputs an executive summary, scored dimensions, and a prioritised action list.
+Can also run in focused mode on a single file, PR diff, or dimension.

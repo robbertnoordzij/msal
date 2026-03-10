@@ -36,6 +36,9 @@ public class AuthCookieService {
 
     /** Writes a new AUTH_TOKEN cookie containing the given ID token. */
     public void setAuthCookie(HttpServletResponse response, String idToken) {
+        if (idToken == null || idToken.isBlank()) {
+            throw new IllegalArgumentException("ID token cannot be null or empty");
+        }
         response.addHeader(HttpHeaders.SET_COOKIE,
                 buildAuthCookie(idToken, appProperties.getCookie().getMaxAge()).toString());
     }
@@ -47,12 +50,18 @@ public class AuthCookieService {
 
     /** Sets a short-lived cookie carrying the OAuth state parameter for CSRF protection. */
     public void setOAuthStateCookie(HttpServletResponse response, String state) {
+        if (state == null || state.isBlank()) {
+            throw new IllegalArgumentException("OAuth state cannot be null or empty");
+        }
         response.addHeader(HttpHeaders.SET_COOKIE,
                 buildOAuthFlowCookie(OAUTH_STATE_COOKIE, state, OAUTH_FLOW_MAX_AGE_SECONDS).toString());
     }
 
     /** Sets a short-lived cookie carrying the PKCE code verifier. */
     public void setPkceVerifierCookie(HttpServletResponse response, String verifier) {
+        if (verifier == null || verifier.isBlank()) {
+            throw new IllegalArgumentException("PKCE verifier cannot be null or empty");
+        }
         response.addHeader(HttpHeaders.SET_COOKIE,
                 buildOAuthFlowCookie(PKCE_VERIFIER_COOKIE, verifier, OAUTH_FLOW_MAX_AGE_SECONDS).toString());
     }
