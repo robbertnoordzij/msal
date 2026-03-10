@@ -4,8 +4,8 @@ import com.example.msalbff.config.AppProperties;
 import com.example.msalbff.service.AuthCookieService;
 import com.example.msalbff.service.TokenExchangeService;
 import com.microsoft.aad.msal4j.IAuthenticationResult;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
@@ -37,13 +37,13 @@ public class AuthController {
     }
 
     @GetMapping("/login")
-    public void startLogin(HttpSession session, HttpServletResponse response) {
+    public void startLogin(HttpServletResponse response) {
         try {
             String state = UUID.randomUUID().toString();
-            session.setAttribute("oauth_state", state);
+            authCookieService.setOAuthStateCookie(response, state);
 
             String codeVerifier = generateCodeVerifier();
-            session.setAttribute("pkce_verifier", codeVerifier);
+            authCookieService.setPkceVerifierCookie(response, codeVerifier);
 
             String authUrl = tokenExchangeService.generateAuthorizationUrl(
                 appProperties.getAzureAd().getRedirectUri(),
@@ -62,7 +62,7 @@ public class AuthController {
                          @RequestParam(name = "state", required = false) String state,
                          @RequestParam(name = "error", required = false) String error,
                          @RequestParam(name = "error_description", required = false) String errorDescription,
-                         HttpSession session,
+                         HttpServletRequest request,
                          HttpServletResponse response) {
         String frontend = frontendUrl();
         try {
@@ -78,21 +78,23 @@ public class AuthController {
                 return;
             }
 
-            String expectedState = (String) session.getAttribute("oauth_state");
+            String expectedState = authCookieService.getOAuthStateCookie(request);
             if (expectedState == null || !expectedState.equals(state)) {
                 logger.warn("OAuth state mismatch — possible CSRF attempt");
+                authCookieService.clearOAuthFlowCookies(response);
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
-            session.removeAttribute("oauth_state");
 
-            String codeVerifier = (String) session.getAttribute("pkce_verifier");
+            String codeVerifier = authCookieService.getPkceVerifierCookie(request);
             if (codeVerifier == null) {
-                logger.error("No PKCE verifier found in session");
+                logger.error("No PKCE verifier found in cookie");
+                authCookieService.clearOAuthFlowCookies(response);
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
-            session.removeAttribute("pkce_verifier");
+
+            authCookieService.clearOAuthFlowCookies(response);
 
             IAuthenticationResult result = tokenExchangeService.exchangeAuthorizationCode(
                 code, appProperties.getAzureAd().getRedirectUri(), appProperties.getAzureAd().scopesAsSet(), codeVerifier);
@@ -106,7 +108,9 @@ public class AuthController {
                 return;
             }
             authCookieService.setAuthCookie(response, idToken);
-            session.setAttribute("msal_account_id", result.account().homeAccountId());
+
+            // No server-side state needed: the MSAL account ID for silent refresh is
+            // derived from the oid/tid claims embedded in the AUTH_TOKEN cookie itself.
 
             logger.info("Login successful for user, ID token stored in HTTP-only cookie");
             response.sendRedirect(frontend + "/?login=success");
@@ -122,8 +126,7 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public void logout(HttpSession session, HttpServletResponse response) {
-        session.invalidate();
+    public void logout(HttpServletResponse response) {
         authCookieService.clearAuthCookie(response);
         logger.info("User logged out, AUTH_TOKEN cookie cleared");
     }

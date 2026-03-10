@@ -9,7 +9,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,7 +38,6 @@ class CookieAuthenticationFilterTest {
     @Mock private HttpServletRequest request;
     @Mock private HttpServletResponse response;
     @Mock private FilterChain filterChain;
-    @Mock private HttpSession session;
     @Mock private Jwt jwt;
 
     private CookieAuthenticationFilter filter;
@@ -61,7 +59,7 @@ class CookieAuthenticationFilterTest {
     @Test
     void validToken_setsAuthentication() throws Exception {
         givenAuthCookie(VALID_TOKEN);
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken(VALID_TOKEN)).thenReturn(true);
         when(tokenValidationService.parseToken(VALID_TOKEN)).thenReturn(jwt);
         when(tokenValidationService.getUserName(jwt)).thenReturn("user@example.com");
@@ -76,11 +74,11 @@ class CookieAuthenticationFilterTest {
     }
 
     @Test
-    void invalidToken_noSession_leavesContextEmpty() throws Exception {
+    void invalidToken_noAccountClaims_leavesContextEmpty() throws Exception {
         givenAuthCookie("invalid-token");
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken("invalid-token")).thenReturn(false);
-        when(request.getSession(false)).thenReturn(null);
+        // parseToken("invalid-token") not stubbed — returns null, extractHomeAccountId returns null
 
         filter.doFilter(request, response, filterChain);
 
@@ -89,11 +87,11 @@ class CookieAuthenticationFilterTest {
     }
 
     @Test
-    void invalidToken_withSession_attemptsRefresh() throws Exception {
+    void invalidToken_withAccountClaims_attemptsRefresh() throws Exception {
         givenAuthCookie("expired-token");
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken("expired-token")).thenReturn(false);
-        givenSessionWithAccountId(ACCOUNT_ID);
+        givenTokenWithAccountClaims("expired-token", ACCOUNT_ID);
 
         IAuthenticationResult refreshResult = mock(IAuthenticationResult.class);
         when(refreshResult.idToken()).thenReturn("new-id-token");
@@ -114,13 +112,15 @@ class CookieAuthenticationFilterTest {
     @Test
     void validToken_expiringSoon_triggersProactiveRefresh() throws Exception {
         givenAuthCookie(VALID_TOKEN);
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken(VALID_TOKEN)).thenReturn(true);
         when(tokenValidationService.parseToken(VALID_TOKEN)).thenReturn(jwt);
         when(tokenValidationService.getUserName(jwt)).thenReturn("user@example.com");
         // Expires within the proactive threshold
         when(jwt.getExpiresAt()).thenReturn(Instant.now().plusSeconds(60));
-        givenSessionWithAccountId(ACCOUNT_ID);
+        // Account claims needed for extractHomeAccountId from the current token
+        when(jwt.getClaimAsString("oid")).thenReturn("oid");
+        when(jwt.getClaimAsString("tid")).thenReturn("tid");
         when(tokenExchangeService.acquireTokenSilently(eq(ACCOUNT_ID), any()))
                 .thenReturn(Optional.empty()); // refresh attempt made but empty is fine for this test
 
@@ -135,7 +135,7 @@ class CookieAuthenticationFilterTest {
     @Test
     void validToken_notExpiringSoon_doesNotTriggerRefresh() throws Exception {
         givenAuthCookie(VALID_TOKEN);
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken(VALID_TOKEN)).thenReturn(true);
         when(tokenValidationService.parseToken(VALID_TOKEN)).thenReturn(jwt);
         when(tokenValidationService.getUserName(jwt)).thenReturn("user@example.com");
@@ -148,7 +148,7 @@ class CookieAuthenticationFilterTest {
 
     @Test
     void authEndpoint_skipsFilterCompletely() throws Exception {
-        when(request.getRequestURI()).thenReturn("/api/auth/login");
+        when(request.getServletPath()).thenReturn("/auth/login");
 
         filter.doFilter(request, response, filterChain);
 
@@ -160,9 +160,9 @@ class CookieAuthenticationFilterTest {
     @Test
     void silentRefreshFails_leavesContextEmpty() throws Exception {
         givenAuthCookie("expired-token");
-        when(request.getRequestURI()).thenReturn("/api/hello");
+        when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken("expired-token")).thenReturn(false);
-        givenSessionWithAccountId(ACCOUNT_ID);
+        givenTokenWithAccountClaims("expired-token", ACCOUNT_ID);
         when(tokenExchangeService.acquireTokenSilently(eq(ACCOUNT_ID), any()))
                 .thenReturn(Optional.empty());
 
@@ -178,8 +178,11 @@ class CookieAuthenticationFilterTest {
         when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(COOKIE_NAME, token)});
     }
 
-    private void givenSessionWithAccountId(String accountId) {
-        when(request.getSession(false)).thenReturn(session);
-        when(session.getAttribute("msal_account_id")).thenReturn(accountId);
+    private void givenTokenWithAccountClaims(String token, String accountId) {
+        String[] parts = accountId.split("\\.", 2);
+        Jwt accountJwt = mock(Jwt.class);
+        when(accountJwt.getClaimAsString("oid")).thenReturn(parts[0]);
+        when(accountJwt.getClaimAsString("tid")).thenReturn(parts[1]);
+        when(tokenValidationService.parseToken(token)).thenReturn(accountJwt);
     }
 }

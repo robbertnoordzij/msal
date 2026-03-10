@@ -9,7 +9,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -39,9 +38,9 @@ import java.util.List;
  *       otherwise the request proceeds unauthenticated (Spring Security returns 401).</li>
  * </ol>
  *
- * <p>The MSAL account identifier ({@code msal_account_id}) required for silent refresh is
- * stored in the server-side HTTP session by {@code AuthController} after login. It is never
- * sent to the browser.
+ * <p>The MSAL account identifier required for silent refresh is derived on-the-fly from the
+ * {@code oid} and {@code tid} claims embedded in the AUTH_TOKEN cookie itself ({@code oid.tid}).
+ * No server-side session or additional storage is required.
  */
 public class CookieAuthenticationFilter extends OncePerRequestFilter {
 
@@ -67,7 +66,7 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        if (request.getRequestURI().startsWith("/auth/")) {
+        if (request.getServletPath().startsWith("/auth/")) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -80,11 +79,11 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
                 setAuthentication(jwt);
 
                 if (isExpiringSoon(jwt)) {
-                    tryRefreshToken(request, response);
+                    tryRefreshToken(token, response);
                 }
             } else {
                 // Token invalid or expired — attempt silent refresh before giving up
-                tryRefreshToken(request, response);
+                tryRefreshToken(token, response);
             }
         }
 
@@ -93,10 +92,12 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
 
     /**
      * Attempts a silent token refresh using the MSAL-cached refresh token.
+     * The MSAL account ID is derived from the {@code oid} and {@code tid} claims
+     * in the current token (even if expired, the claims are still readable).
      * Updates both the Spring Security context and the AUTH_TOKEN cookie on success.
      */
-    private void tryRefreshToken(HttpServletRequest request, HttpServletResponse response) {
-        String homeAccountId = getHomeAccountId(request);
+    private void tryRefreshToken(String token, HttpServletResponse response) {
+        String homeAccountId = extractHomeAccountId(token);
         if (homeAccountId == null) {
             return;
         }
@@ -114,6 +115,29 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
         });
     }
 
+    /**
+     * Extracts the MSAL home account ID from the token's {@code oid} and {@code tid} claims.
+     * The token is parsed without signature verification since the claims are needed even
+     * for expired tokens. Returns {@code null} if the claims are absent or the token
+     * cannot be parsed.
+     */
+    private String extractHomeAccountId(String token) {
+        try {
+            Jwt jwt = tokenValidationService.parseToken(token);
+            if (jwt == null) {
+                return null;
+            }
+            String oid = jwt.getClaimAsString("oid");
+            String tid = jwt.getClaimAsString("tid");
+            if (oid != null && tid != null) {
+                return oid + "." + tid;
+            }
+        } catch (Exception e) {
+            logger.debug("Could not extract account ID from token for silent refresh: {}", e.getMessage());
+        }
+        return null;
+    }
+
     private void setAuthentication(Jwt jwt) {
         String username = tokenValidationService.getUserName(jwt);
         Collection<GrantedAuthority> authorities = extractAuthorities(jwt);
@@ -127,14 +151,6 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
     private boolean isExpiringSoon(Jwt jwt) {
         Instant expiry = jwt.getExpiresAt();
         return expiry != null && expiry.isBefore(Instant.now().plusSeconds(PROACTIVE_REFRESH_THRESHOLD_SECONDS));
-    }
-
-    private String getHomeAccountId(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session == null) {
-            return null;
-        }
-        return (String) session.getAttribute("msal_account_id");
     }
 
     private String extractTokenFromCookie(HttpServletRequest request) {

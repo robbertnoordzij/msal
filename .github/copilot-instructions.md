@@ -7,11 +7,19 @@ Azure AD authentication demo using the Backend-for-Frontend (BFF) pattern. The R
 ## Architecture
 
 ```
-React (MSAL.js) → POST /api/auth/login (with Azure AD token)
-                ← Spring Boot sets HTTP-only AUTH_TOKEN cookie
-React          → GET /api/* (cookie sent automatically)
+React          → GET  /api/auth/login
+                ← Spring Boot redirects browser to Entra ID (PKCE + state)
+Browser        → GET  /api/auth/callback?code=...&state=... (Entra ID redirect)
+                ← Spring Boot validates code, sets HTTP-only AUTH_TOKEN cookie,
+                   redirects to frontend /?login=success
+React          → GET  /api/hello (or any protected route)
                 ← Spring CookieAuthenticationFilter validates JWT via Azure AD JWK Set
+                   (silent token refresh via MSAL server-side cache on near-expiry)
 ```
+
+> **Path note:** `server.servlet.context-path=/api` is set in `application.properties`; `AuthController` maps to `/auth`. `CookieAuthenticationFilter` uses `getServletPath()` (context-stripped path) to exclude `/auth/**` requests.
+
+> See [`docs/token-flow.puml`](../docs/token-flow.puml) for the full sequence diagram.
 
 **Config is auto-generated.** The `.env` file is the single source of truth. Run `./configure.sh` (or `configure.ps1`) to regenerate:
 - `frontend/src/config/msalConfig.js`
@@ -71,8 +79,9 @@ Naming: `*Controller`, `*Service`, `*Filter`, `*Config`, `*Properties`, `*Reques
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
 | `/api/health` | GET | Public | Liveness check |
-| `/api/auth/login` | POST | Public | Exchange MSAL token → cookie |
-| `/api/auth/logout` | POST | Public | Clear cookie (Max-Age=0) |
+| `/api/auth/login` | GET | Public | Start PKCE flow — generates state + challenge, redirects browser to Entra ID |
+| `/api/auth/callback` | GET | Public | OAuth callback — validates state/code, exchanges code for tokens, sets HTTP-only cookie, redirects to `/?login=success` |
+| `/api/auth/logout` | POST | Public | Invalidate HTTP session, clear cookie (Max-Age=0) |
 | `/api/hello` | GET | Cookie | Sample protected endpoint |
 | `/api/userinfo` | GET | Cookie | Return JWT claims |
 
@@ -104,3 +113,23 @@ COOKIE_SAME_SITE=Lax       # set Strict in production
 COOKIE_MAX_AGE=3600
 LOG_LEVEL=DEBUG
 ```
+
+## Custom Agents
+
+Two specialist agents are available in `.github/agents/`:
+
+### `security-researcher`
+
+Focuses on OAuth/OIDC token handling, BFF pattern correctness, secure cookie
+configuration, and OWASP Top 10 risks. Use it to review any change that touches
+authentication, authorisation, cookie settings, CORS/CSRF config, or JWT
+validation logic. It expects you to scope the review (file, PR diff, or specific
+concern) and returns findings classified by severity (🔴 Critical → 🔵 Low).
+
+### `clean-code-reviewer`
+
+Applies Robert C. Martin's Clean Code principles (naming, functions, comments,
+SOLID, error handling, tests) to both the Java backend and JavaScript frontend.
+Use it when refactoring, adding new classes/components, or before merging a PR.
+Security improvements must never be sacrificed for cleanliness — the agent is
+aware of this constraint.
