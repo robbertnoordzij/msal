@@ -15,9 +15,12 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @ExtendWith(MockitoExtension.class)
 @SpringBootTest(properties = {
-    "azure.activedirectory.tenant-id=test-tenant-id",
-    "azure.activedirectory.client-id=test-client-id",
-    "azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/test-tenant-id/discovery/v2.0/keys"
+    "app.azure-ad.tenant-id=test-tenant-id",
+    "app.azure-ad.client-id=test-client-id",
+    "app.azure-ad.client-secret=test-secret",
+    "app.azure-ad.authority=https://login.microsoftonline.com/test-tenant-id",
+    "app.azure-ad.jwk-set-uri=https://login.microsoftonline.com/test-tenant-id/discovery/v2.0/keys",
+    "app.azure-ad.redirect-uri=http://localhost:8080/api/auth/callback"
 })
 public class SimpleApiControllerTest {
 

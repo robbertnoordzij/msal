@@ -8,5 +8,23 @@
   },
   "devDependencies": {
     "concurrently": "^7.6.0"
-  }
+  },
+  "name": "msal",
+  "version": "1.0.0",
+  "description": "<!-- Simplified README (previous detailed reference removed) --> <br />",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robbertnoordzij/msal.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/robbertnoordzij/msal/issues"
+  },
+  "homepage": "https://github.com/robbertnoordzij/msal#readme"
 }

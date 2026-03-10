@@ -1,6 +1,5 @@
 package com.example.msalbff.config;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
@@ -18,7 +17,6 @@ public class WebConfig implements WebMvcConfigurer {
 
     private final AppProperties appProperties;
 
-    @Autowired
     public WebConfig(AppProperties appProperties) {
         this.appProperties = appProperties;
     }
@@ -37,7 +35,7 @@ public class WebConfig implements WebMvcConfigurer {
         // Allow specific HTTP methods
         configuration.setAllowedMethods(Arrays.asList(appProperties.getCors().getAllowedMethods()));
         
-        // Allow all headers for simplicity (can be restricted in production)
+        // Allowed headers — restrict in production to what the API actually needs
         configuration.setAllowedHeaders(Arrays.asList(appProperties.getCors().getAllowedHeaders()));
         
         // Allow credentials (cookies) to be sent

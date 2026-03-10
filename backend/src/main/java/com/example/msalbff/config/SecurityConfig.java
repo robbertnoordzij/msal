@@ -2,7 +2,6 @@ package com.example.msalbff.config;
 
 import com.example.msalbff.security.CookieAuthenticationFilter;
 import com.example.msalbff.service.TokenValidationService;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -31,7 +30,6 @@ public class SecurityConfig {
     private final TokenValidationService tokenValidationService;
     private final AppProperties appProperties;
 
-    @Autowired
     public SecurityConfig(CorsConfigurationSource corsConfigurationSource, 
                          TokenValidationService tokenValidationService,
                          AppProperties appProperties) {

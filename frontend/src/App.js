@@ -1,28 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { authService } from './services/authService';
 
 function App() {
-  // Function to read a cookie by name
-  function getCookie(name) {
-    const value = `; ${document.cookie}`;
-    const parts = value.split(`; ${name}=`);
-    if (parts.length === 2) return parts.pop().split(';').shift();
-    return null;
-  }
-
-  // Handler to read AUTH_TOKEN cookie and show it
-  const handleReadAuthToken = () => {
-    const token = getCookie('AUTH_TOKEN');
-    if (token) {
-      alert(`AUTH_TOKEN: ${token}`);
-    } else {
-      alert('AUTH_TOKEN cookie not found or not accessible.');
-    }
-  };
   const [apiMessage, setApiMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [cookieSet, setCookieSet] = useState(false);
+
+  // Automatically handle login result from URL parameters or check initial auth status
+  useEffect(() => {
+    const queryParams = new URLSearchParams(window.location.search);
+    const loginStatus = queryParams.get('login');
+
+    if (loginStatus === 'success') {
+      console.log('Login successful, calling hello endpoint...');
+      callHelloEndpoint();
+      // Remove query parameter from URL without refreshing
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (loginStatus === 'error') {
+      console.error('Login failed');
+      setError('Login failed. Please try again.');
+      // Remove query parameter from URL without refreshing
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+      // No login parameters, check if already authenticated silently
+      console.log('No login status in URL, checking current auth status...');
+      callHelloEndpoint(true);
+    }
+  }, []);
 
   const handleLogin = () => {
     authService.startLogin();
@@ -43,20 +48,24 @@ function App() {
   };
 
   // Call protected API endpoint
-  const callHelloEndpoint = async () => {
+  const callHelloEndpoint = async (isInitialCheck = false) => {
     try {
       setIsLoading(true);
-      setError('');
+      if (!isInitialCheck) setError('');
 
       const response = await authService.getHelloMessage();
       setApiMessage(JSON.stringify(response, null, 2));
       setCookieSet(true);
     } catch (error) {
       console.error('API call failed:', error);
-      setError('API call failed: ' + error.message);
+      if (!isInitialCheck) {
+        setError('API call failed: ' + error.message);
+      }
       if (error.response?.status === 401) {
         setCookieSet(false);
-        setError('Authentication required. Please sign in first.');
+        if (!isInitialCheck) {
+          setError('Authentication required. Please sign in first.');
+        }
       }
     } finally {
       setIsLoading(false);
@@ -128,15 +137,9 @@ function App() {
             >
               Call Hello Endpoint
             </button>
-            {/* Button to read AUTH_TOKEN cookie */}
-            <button
-              className="button"
-              style={{ marginLeft: '10px' }}
-              onClick={handleReadAuthToken}
-              disabled={isLoading}
-            >
-              Read AUTH_TOKEN Cookie
-            </button>
+            <p style={{ fontSize: '13px', color: '#666', marginTop: '8px' }}>
+              🔒 <strong>AUTH_TOKEN is HTTP-only</strong> — it cannot be read by JavaScript, protecting it from XSS attacks.
+            </p>
           </div>
 
           {/* API response */}

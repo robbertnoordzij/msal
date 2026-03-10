@@ -82,62 +82,18 @@ if [ ! -d "$FRONTEND_CONFIG_DIR" ]; then
 fi
 
 cat <<EOF > "$FRONTEND_CONFIG_DIR/msalConfig.js"
-// MSAL configuration
 // Auto-generated from .env file - DO NOT EDIT MANUALLY
-// Run 'npm run config' or './configure.sh' to regenerate
-
-const CLIENTID = "$AZURE_CLIENT_ID";
-const TENANTID = "$AZURE_TENANT_ID";
-
-export const msalConfig = {
-  auth: {
-    clientId: CLIENTID,
-    authority: "https://login.microsoftonline.com/" + TENANTID,
-    redirectUri: window.location.origin, // Must be registered as a redirect URI in Azure AD
-    postLogoutRedirectUri: window.location.origin,
-  },
-  cache: {
-    cacheLocation: "none", // Prevent storing tokens in browser storage
-    storeAuthStateInCookie: true, // Store auth state in cookies instead
-  },
-  system: {
-    loggerOptions: {
-      loggerCallback: (level, message, containsPii) => {
-        if (containsPii) {
-          return;
-        }
-        switch (level) {
-          case "Error":
-            console.error(message);
-            return;
-          case "Info":
-            console.info(message);
-            return;
-          case "Verbose":
-            console.debug(message);
-            return;
-          case "Warning":
-            console.warn(message);
-            return;
-          default:
-            return;
-        }
-      },
-    },
-  },
-};
-
-// API scopes for your application
-export const loginRequest = {
-  scopes: ["openid", "profile", "User.Read", "offline_access"], // Standard Microsoft Graph scopes
-};
+// Run './configure.sh' to regenerate
 
 // Backend API configuration
+// The BFF (Backend For Frontend) handles all token exchange server-side.
+// The browser only needs to know the API base URL — no client-id or tenant-id required.
 export const apiConfig = {
-  baseUrl: "/api", // Proxy will forward to backend
+  baseUrl: "/api", // Proxy forwards to backend (see setupProxy.js)
   endpoints: {
     hello: "/hello",
     login: "/auth/login",
+    logout: "/auth/logout",
   },
 };
 EOF
@@ -163,33 +119,23 @@ spring.application.name=msal-bff
 server.port=${BACKEND_PORT:-8080}
 server.servlet.context-path=${BACKEND_CONTEXT_PATH:-/api}
 
-# Security Configuration
-azure.activedirectory.tenant-id=$AZURE_TENANT_ID
-azure.activedirectory.client-id=$AZURE_CLIENT_ID
-azure.activedirectory.jwk-set-uri=https://login.microsoftonline.com/\${azure.activedirectory.tenant-id}/discovery/v2.0/keys
-
-# BFF Client Settings
-app.azure-ad.client-id=$AZURE_CLIENT_ID
+# Azure AD — single source of truth
 app.azure-ad.tenant-id=$AZURE_TENANT_ID
+app.azure-ad.client-id=$AZURE_CLIENT_ID
 app.azure-ad.client-secret=${AZURE_CLIENT_SECRET:-}
 app.azure-ad.authority=https://login.microsoftonline.com/\${app.azure-ad.tenant-id}
-app.azure-ad.redirect-uri=${BACKEND_URL:-http://localhost:8080}${BACKEND_CONTEXT_PATH:-/api}/auth/callback
+app.azure-ad.jwk-set-uri=\${app.azure-ad.authority}/discovery/v2.0/keys
+app.azure-ad.redirect-uri=${FRONTEND_URL:-http://localhost:3000}${BACKEND_CONTEXT_PATH:-/api}/auth/callback
 app.azure-ad.scopes=openid profile offline_access User.Read
 
 # Cookie Configuration
 app.cookie.name=${COOKIE_NAME:-AUTH_TOKEN}
-app.cookie.refresh-name=${REFRESH_TOKEN_COOKIE_NAME:-REFRESH_TOKEN}
 app.cookie.max-age=${COOKIE_MAX_AGE:-3600}
-app.cookie.refresh-max-age=${REFRESH_TOKEN_MAX_AGE:-86400}
 app.cookie.secure=${COOKIE_SECURE:-false}
 app.cookie.same-site=${COOKIE_SAME_SITE:-Lax}
-app.cookie.http-only=true
 
 # CORS Configuration
 app.cors.allowed-origins=${FRONTEND_URL:-http://localhost:3000}
-app.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
-app.cors.allowed-headers=*
-app.cors.allow-credentials=true
 
 # Logging
 logging.level.com.example=${LOG_LEVEL:-DEBUG}

@@ -3,15 +3,17 @@ package com.example.msalbff.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-/**
- * Configuration properties for the application
- */
 @Component
 @ConfigurationProperties(prefix = "app")
 public class AppProperties {
 
+    private final AzureAd azureAd = new AzureAd();
     private final Cookie cookie = new Cookie();
     private final Cors cors = new Cors();
+
+    public AzureAd getAzureAd() {
+        return azureAd;
+    }
 
     public Cookie getCookie() {
         return cookie;
@@ -19,6 +21,37 @@ public class AppProperties {
 
     public Cors getCors() {
         return cors;
+    }
+
+    public static class AzureAd {
+        private String tenantId;
+        private String clientId;
+        private String clientSecret;
+        private String authority;
+        private String jwkSetUri;
+        private String redirectUri;
+        private String scopes = "openid profile offline_access User.Read";
+
+        public String getTenantId() { return tenantId; }
+        public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+
+        public String getClientId() { return clientId; }
+        public void setClientId(String clientId) { this.clientId = clientId; }
+
+        public String getClientSecret() { return clientSecret; }
+        public void setClientSecret(String clientSecret) { this.clientSecret = clientSecret; }
+
+        public String getAuthority() { return authority; }
+        public void setAuthority(String authority) { this.authority = authority; }
+
+        public String getJwkSetUri() { return jwkSetUri; }
+        public void setJwkSetUri(String jwkSetUri) { this.jwkSetUri = jwkSetUri; }
+
+        public String getRedirectUri() { return redirectUri; }
+        public void setRedirectUri(String redirectUri) { this.redirectUri = redirectUri; }
+
+        public String getScopes() { return scopes; }
+        public void setScopes(String scopes) { this.scopes = scopes; }
     }
 
     public static class Cookie {

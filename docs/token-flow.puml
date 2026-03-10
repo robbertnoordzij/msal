@@ -1,0 +1,60 @@
+@startuml
+skinparam sequenceMessageAlign center
+
+actor User
+participant "Frontend\n(React)" as FE
+box "Backend (Spring Boot BFF)" #LightBlue
+    participant "Auth Controller" as AC
+    participant "Token Exchange\nService" as TES
+    participant "Cookie Auth\nFilter" as CAF
+    participant "Token Validation\nService" as TVS
+    participant "API Controller" as API
+end box
+participant "Entra ID\n(Azure AD)" as Entra
+
+== Authentication Flow ==
+
+User -> FE : Clicks Login
+FE -> AC : GET /api/auth/login
+AC -> AC : Generate PKCE Verifier & Challenge\nStore in session: pkce_verifier
+AC -> AC : Generate UUID state\nStore in session: oauth_state (CSRF protection)
+AC -> TES : generateAuthorizationUrl(scopes, state, challenge)
+TES -> AC : Auth URL (PKCE S256 + prompt=select_account)
+AC -> User : HTTP 302 Redirect to Entra ID
+
+User -> Entra : Authenticate & Consent
+Entra -> AC : GET /api/auth/callback?code=...&state=...\n(via Browser Redirect)
+
+AC -> AC : Validate state == session oauth_state\n(CSRF check — reject on mismatch)
+AC -> AC : Retrieve pkce_verifier from session\nClear verifier + state from session
+AC -> TES : exchangeAuthorizationCode(code, verifier)
+TES -> Entra : POST /token\n(code + code_verifier + client_secret + redirect_uri)
+Entra -> TES : ID Token + Access Token
+note right of TES : Access Token stays server-side.\nAccess Token is never sent to browser.
+TES -> AC : IAuthenticationResult
+
+AC -> AC : Extract ID Token (aud=clientId)\nSet HTTP-only Secure cookie: AUTH_TOKEN
+AC -> User : HTTP 302 Redirect to Frontend /?login=success
+
+== Authenticated API Request ==
+
+User -> FE : Access Protected Feature
+FE -> CAF : GET /api/hello\n(Browser sends AUTH_TOKEN cookie automatically)
+CAF -> CAF : Extract ID Token from cookie
+CAF -> TVS : validateToken(idToken)
+TVS -> TVS : Verify JWK signature (cached from Entra)\nCheck exp, iss (tenantId), aud (clientId)
+TVS -> CAF : valid / invalid
+CAF -> CAF : Extract username + roles from JWT claims\nSet UsernamePasswordAuthenticationToken in SecurityContext
+CAF -> API : Forward authenticated request
+API -> FE : JSON Response (e.g., "Hello <name>!")
+FE -> User : Display Data
+
+== Logout ==
+
+User -> FE : Clicks Logout
+FE -> AC : POST /api/auth/logout
+AC -> AC : Set AUTH_TOKEN cookie with maxAge=0
+AC -> FE : 200 OK (browser deletes cookie)
+FE -> User : Show unauthenticated state
+
+@enduml

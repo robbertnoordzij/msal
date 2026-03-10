@@ -7,13 +7,20 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Custom authentication filter that reads JWT tokens from HTTP-only cookies
@@ -25,6 +32,8 @@ import java.util.ArrayList;
  * - Provides protection against XSS attacks (tokens not accessible to JavaScript)
  */
 public class CookieAuthenticationFilter extends OncePerRequestFilter {
+
+    private static final Logger logger = LoggerFactory.getLogger(CookieAuthenticationFilter.class);
 
     private final TokenValidationService tokenValidationService;
     private final AppProperties appProperties;
@@ -51,51 +60,47 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
         
         if (token != null && tokenValidationService.validateToken(token)) {
             try {
-                // Parse the JWT to get user information
-                org.springframework.security.oauth2.jwt.Jwt jwt = tokenValidationService.parseToken(token);
+                Jwt jwt = tokenValidationService.parseToken(token);
                 String username = tokenValidationService.getUserName(jwt);
-                
-                UsernamePasswordAuthenticationToken authentication = 
-                    new UsernamePasswordAuthenticationToken(
-                        username, 
-                        null, 
-                        new ArrayList<>() // No authorities for now
-                    );
-                
-                // Add JWT as details for use in controllers
+                Collection<GrantedAuthority> authorities = extractAuthorities(jwt);
+
+                UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(username, null, authorities);
                 authentication.setDetails(jwt);
-                
-                // Set authentication in security context
+
                 SecurityContextHolder.getContext().setAuthentication(authentication);
-                
-                System.out.println("✅ Authentication set for user: " + username);
-                
+                logger.debug("Authenticated user: {}", username);
+
             } catch (Exception e) {
-                System.err.println("❌ Error setting authentication: " + e.getMessage());
-                // Clear any existing authentication on error
+                logger.error("Failed to set authentication from token", e);
                 SecurityContextHolder.clearContext();
             }
-        } else {
-            System.out.println("❌ No valid token found in cookie");
+        } else if (token != null) {
+            logger.debug("Token present but invalid — clearing context");
         }
 
         filterChain.doFilter(request, response);
     }
 
-    /**
-     * Extracts JWT token from HTTP-only cookie
-     */
     private String extractTokenFromCookie(HttpServletRequest request) {
         if (request.getCookies() == null) {
             return null;
         }
-
         for (Cookie cookie : request.getCookies()) {
             if (appProperties.getCookie().getName().equals(cookie.getName())) {
                 return cookie.getValue();
             }
         }
-        
         return null;
+    }
+
+    private Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
+        List<String> roles = jwt.getClaimAsStringList("roles");
+        if (roles == null) {
+            return Collections.emptyList();
+        }
+        return roles.stream()
+            .map(role -> new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
+            .collect(Collectors.toList());
     }
 }

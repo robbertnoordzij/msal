@@ -14,17 +14,18 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/auth")
 @CrossOrigin(origins = "${app.cors.allowed-origins}", allowCredentials = "true")
 public class AuthController {
 
-    private static final Logger logger = LoggerFactory.getLogger(com.example.msalbff.controller.AuthController.class);
+    private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
 
     private final TokenExchangeService tokenExchangeService;
     private final AppProperties appProperties;
@@ -37,18 +38,17 @@ public class AuthController {
     @GetMapping("/login")
     public void startLogin(HttpSession session, HttpServletResponse response) {
         try {
-            String redirectUri = "http://localhost:3000/api/auth/callback";
-            Set<String> scopes = Set.of("openid", "profile", "User.Read");
-            String state = "bff"; // simplistic state; in production, persist and validate per user session
+            String state = UUID.randomUUID().toString();
+            session.setAttribute("oauth_state", state);
 
-            // Generate PKCE verifier and challenge
             String codeVerifier = generateCodeVerifier();
-            String codeChallenge = generateCodeChallenge(codeVerifier);
-
-            // Store code verifier in session
             session.setAttribute("pkce_verifier", codeVerifier);
 
-            String authUrl = tokenExchangeService.generateAuthorizationUrl(redirectUri, scopes, state, codeChallenge);
+            String authUrl = tokenExchangeService.generateAuthorizationUrl(
+                appProperties.getAzureAd().getRedirectUri(),
+                getScopes(),
+                state,
+                generateCodeChallenge(codeVerifier));
             response.sendRedirect(authUrl);
         } catch (Exception e) {
             logger.error("Failed to start login redirect", e);
@@ -63,24 +63,28 @@ public class AuthController {
                          @RequestParam(name = "error_description", required = false) String errorDescription,
                          HttpSession session,
                          HttpServletResponse response) {
-        String[] origins = appProperties.getCors().getAllowedOrigins();
-        String frontend = (origins != null && origins.length > 0) ? origins[0] : "/";
+        String frontend = frontendUrl();
         try {
             if (error != null) {
-                String desc = errorDescription != null ? URLEncoder.encode(errorDescription, StandardCharsets.UTF_8) : "";
-                logger.warn("Authorization error: {} - {}", error, desc);
+                logger.warn("Authorization error from Azure AD: {} — {}",
+                    error, errorDescription != null ? URLEncoder.encode(errorDescription, StandardCharsets.UTF_8) : "");
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
             if (code == null || code.isEmpty()) {
+                logger.warn("Callback received without authorization code");
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
 
-            String redirectUri = "http://localhost:3000/api/auth/callback";
-            Set<String> scopes = Set.of("openid", "profile", "User.Read");
+            String expectedState = (String) session.getAttribute("oauth_state");
+            if (expectedState == null || !expectedState.equals(state)) {
+                logger.warn("OAuth state mismatch — possible CSRF attempt");
+                response.sendRedirect(frontend + "/?login=error");
+                return;
+            }
+            session.removeAttribute("oauth_state");
 
-            // Retrieve PKCE verifier from session
             String codeVerifier = (String) session.getAttribute("pkce_verifier");
             if (codeVerifier == null) {
                 logger.error("No PKCE verifier found in session");
@@ -89,21 +93,50 @@ public class AuthController {
             }
             session.removeAttribute("pkce_verifier");
 
-            IAuthenticationResult result = tokenExchangeService.exchangeAuthorizationCode(code, redirectUri, scopes, codeVerifier);
+            IAuthenticationResult result = tokenExchangeService.exchangeAuthorizationCode(
+                code, appProperties.getAzureAd().getRedirectUri(), getScopes(), codeVerifier);
 
-            // Set cookies
-            addCookie(response, appProperties.getCookie().getName(), result.accessToken(), appProperties.getCookie().getMaxAge());
+            // Store the ID token — aud=clientId, suitable for BFF session validation.
+            // The access token targets downstream APIs (e.g. Graph) and is never exposed to the browser.
+            String idToken = result.idToken();
+            if (idToken == null || idToken.isBlank()) {
+                logger.error("No ID token in MSAL result — ensure 'openid' scope is requested");
+                response.sendRedirect(frontend + "/?login=error");
+                return;
+            }
+            addCookie(response, appProperties.getCookie().getName(), idToken, appProperties.getCookie().getMaxAge());
 
-            logger.info("Login successful, tokens stored in HTTP-only cookies");
+            logger.info("Login successful for user, ID token stored in HTTP-only cookie");
             response.sendRedirect(frontend + "/?login=success");
         } catch (Exception e) {
             logger.error("Callback processing failed", e);
             try {
                 response.sendRedirect(frontend + "/?login=error");
-            } catch (Exception ignored) {
+            } catch (Exception sendError) {
+                logger.error("Failed to send error redirect", sendError);
                 response.setStatus(500);
             }
         }
+    }
+
+    @PostMapping("/logout")
+    public void logout(HttpServletResponse response) {
+        Cookie expired = new Cookie(appProperties.getCookie().getName(), "");
+        expired.setHttpOnly(appProperties.getCookie().isHttpOnly());
+        expired.setSecure(appProperties.getCookie().isSecure());
+        expired.setPath("/");
+        expired.setMaxAge(0);
+        response.addCookie(expired);
+        logger.info("User logged out, AUTH_TOKEN cookie cleared");
+    }
+
+    private String frontendUrl() {
+        String[] origins = appProperties.getCors().getAllowedOrigins();
+        return (origins != null && origins.length > 0) ? origins[0] : "";
+    }
+
+    private Set<String> getScopes() {
+        return new HashSet<>(Arrays.asList(appProperties.getAzureAd().getScopes().split(" ")));
     }
 
     private void addCookie(HttpServletResponse response, String name, String value, int maxAge) {
@@ -116,16 +149,14 @@ public class AuthController {
     }
 
     private String generateCodeVerifier() {
-        SecureRandom secureRandom = new SecureRandom();
-        byte[] codeVerifier = new byte[32];
-        secureRandom.nextBytes(codeVerifier);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(codeVerifier);
+        byte[] bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private String generateCodeChallenge(String verifier) throws Exception {
-        byte[] bytes = verifier.getBytes(StandardCharsets.US_ASCII);
-        MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
-        byte[] digest = messageDigest.digest(bytes);
+        byte[] digest = MessageDigest.getInstance("SHA-256")
+            .digest(verifier.getBytes(StandardCharsets.US_ASCII));
         return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
     }
 }
