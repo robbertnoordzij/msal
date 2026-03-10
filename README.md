@@ -58,7 +58,7 @@ Summarised:
 │             │                                  │ 5. Exchanges code+verifier
 │             │                                  │    with Entra ID (server-side)
 │             │                                  │ 6. Sets AUTH_TOKEN cookie
-│             │  7. 302 → /?login=success         │    (HttpOnly, Secure, SameSite)
+│             │  7. 302 → /?login=success        │    (HttpOnly, Secure, SameSite)
 │             │◀─────────────────────────────────│
 │             │                                  │
 │             │  8. GET /api/hello               │
