@@ -1,12 +1,14 @@
 package com.example.msalbff.security;
 
 import com.example.msalbff.config.AppProperties;
+import com.example.msalbff.service.TokenExchangeService;
 import com.example.msalbff.service.TokenValidationService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -17,69 +19,135 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Custom authentication filter that reads JWT tokens from HTTP-only cookies
- * 
- * This filter:
- * - Extracts JWT tokens from HTTP-only cookies
- * - Validates tokens using Azure AD
- * - Sets authentication context for Spring Security
- * - Provides protection against XSS attacks (tokens not accessible to JavaScript)
+ * Reads the AUTH_TOKEN HTTP-only cookie on every request, validates the JWT,
+ * and populates the Spring Security context.
+ *
+ * <p>Token refresh strategy:
+ * <ol>
+ *   <li>If the token is valid and <em>not</em> expiring soon — authenticate normally.</li>
+ *   <li>If the token is valid but expiring within {@value #PROACTIVE_REFRESH_THRESHOLD_SECONDS}
+ *       seconds — authenticate with the current token and silently refresh in the background.</li>
+ *   <li>If the token is expired or otherwise invalid — attempt a silent refresh using the
+ *       MSAL-cached refresh token. If that succeeds, set authentication and update the cookie;
+ *       otherwise the request proceeds unauthenticated (Spring Security returns 401).</li>
+ * </ol>
+ *
+ * <p>The MSAL account identifier ({@code msal_account_id}) required for silent refresh is
+ * stored in the server-side HTTP session by {@code AuthController} after login. It is never
+ * sent to the browser.
  */
 public class CookieAuthenticationFilter extends OncePerRequestFilter {
 
     private static final Logger logger = LoggerFactory.getLogger(CookieAuthenticationFilter.class);
+    static final int PROACTIVE_REFRESH_THRESHOLD_SECONDS = 300;
 
     private final TokenValidationService tokenValidationService;
+    private final TokenExchangeService tokenExchangeService;
     private final AppProperties appProperties;
 
-    public CookieAuthenticationFilter(TokenValidationService tokenValidationService, 
-                                    AppProperties appProperties) {
+    public CookieAuthenticationFilter(TokenValidationService tokenValidationService,
+                                      TokenExchangeService tokenExchangeService,
+                                      AppProperties appProperties) {
         this.tokenValidationService = tokenValidationService;
+        this.tokenExchangeService = tokenExchangeService;
         this.appProperties = appProperties;
     }
 
     @Override
-    protected void doFilterInternal(HttpServletRequest request, 
-                                  HttpServletResponse response, 
-                                  FilterChain filterChain) throws ServletException, IOException {
-        
-        // Skip authentication for auth endpoints
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
         if (request.getRequestURI().startsWith("/api/auth/")) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        // Extract JWT token from cookie
         String token = extractTokenFromCookie(request);
-        
-        if (token != null && tokenValidationService.validateToken(token)) {
-            try {
+
+        if (token != null) {
+            if (tokenValidationService.validateToken(token)) {
                 Jwt jwt = tokenValidationService.parseToken(token);
-                String username = tokenValidationService.getUserName(jwt);
-                Collection<GrantedAuthority> authorities = extractAuthorities(jwt);
+                setAuthentication(jwt);
 
-                UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(username, null, authorities);
-                authentication.setDetails(jwt);
-
-                SecurityContextHolder.getContext().setAuthentication(authentication);
-                logger.debug("Authenticated user: {}", username);
-
-            } catch (Exception e) {
-                logger.error("Failed to set authentication from token", e);
-                SecurityContextHolder.clearContext();
+                if (isExpiringSoon(jwt)) {
+                    tryRefreshToken(request, response);
+                }
+            } else {
+                // Token invalid or expired — attempt silent refresh before giving up
+                tryRefreshToken(request, response);
             }
-        } else if (token != null) {
-            logger.debug("Token present but invalid — clearing context");
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * Attempts a silent token refresh using the MSAL-cached refresh token.
+     * Updates both the Spring Security context and the AUTH_TOKEN cookie on success.
+     */
+    private void tryRefreshToken(HttpServletRequest request, HttpServletResponse response) {
+        String homeAccountId = getHomeAccountId(request);
+        if (homeAccountId == null) {
+            return;
+        }
+
+        tokenExchangeService.acquireTokenSilently(homeAccountId, getScopes()).ifPresent(result -> {
+            String newIdToken = result.idToken();
+            if (newIdToken != null && tokenValidationService.validateToken(newIdToken)) {
+                Jwt jwt = tokenValidationService.parseToken(newIdToken);
+                setAuthentication(jwt);
+                updateAuthCookie(response, newIdToken);
+                logger.info("Token silently refreshed for user '{}'", tokenValidationService.getUserName(jwt));
+            } else {
+                logger.warn("Silent refresh returned result but ID token is missing or invalid");
+            }
+        });
+    }
+
+    private void setAuthentication(Jwt jwt) {
+        String username = tokenValidationService.getUserName(jwt);
+        Collection<GrantedAuthority> authorities = extractAuthorities(jwt);
+        UsernamePasswordAuthenticationToken auth =
+                new UsernamePasswordAuthenticationToken(username, null, authorities);
+        auth.setDetails(jwt);
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        logger.debug("Authenticated user: {}", username);
+    }
+
+    private void updateAuthCookie(HttpServletResponse response, String idToken) {
+        Cookie cookie = new Cookie(appProperties.getCookie().getName(), idToken);
+        cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
+        cookie.setSecure(appProperties.getCookie().isSecure());
+        cookie.setPath("/");
+        cookie.setMaxAge(appProperties.getCookie().getMaxAge());
+        response.addCookie(cookie);
+    }
+
+    private boolean isExpiringSoon(Jwt jwt) {
+        Instant expiry = jwt.getExpiresAt();
+        return expiry != null && expiry.isBefore(Instant.now().plusSeconds(PROACTIVE_REFRESH_THRESHOLD_SECONDS));
+    }
+
+    private String getHomeAccountId(HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session == null) {
+            return null;
+        }
+        return (String) session.getAttribute("msal_account_id");
+    }
+
+    private Set<String> getScopes() {
+        return new HashSet<>(Arrays.asList(appProperties.getAzureAd().getScopes().split(" ")));
     }
 
     private String extractTokenFromCookie(HttpServletRequest request) {
@@ -100,7 +168,7 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
             return Collections.emptyList();
         }
         return roles.stream()
-            .map(role -> new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
-            .collect(Collectors.toList());
+                .map(role -> new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
+                .collect(Collectors.toList());
     }
 }

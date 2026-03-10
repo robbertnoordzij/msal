@@ -56,68 +56,25 @@ public class AppProperties {
 
     public static class Cookie {
         private String name = "AUTH_TOKEN";
-        private String refreshName = "REFRESH_TOKEN";
-        private int maxAge = 3600; // 1 hour
-        private int refreshMaxAge = 86400; // 24 hours
+        private int maxAge = 3600;
         private boolean secure = true;
         private String sameSite = "Strict";
         private boolean httpOnly = true;
 
-        public String getName() {
-            return name;
-        }
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
 
-        public void setName(String name) {
-            this.name = name;
-        }
+        public int getMaxAge() { return maxAge; }
+        public void setMaxAge(int maxAge) { this.maxAge = maxAge; }
 
-        public String getRefreshName() {
-            return refreshName;
-        }
+        public boolean isSecure() { return secure; }
+        public void setSecure(boolean secure) { this.secure = secure; }
 
-        public void setRefreshName(String refreshName) {
-            this.refreshName = refreshName;
-        }
+        public String getSameSite() { return sameSite; }
+        public void setSameSite(String sameSite) { this.sameSite = sameSite; }
 
-        public int getMaxAge() {
-            return maxAge;
-        }
-
-        public void setMaxAge(int maxAge) {
-            this.maxAge = maxAge;
-        }
-
-        public int getRefreshMaxAge() {
-            return refreshMaxAge;
-        }
-
-        public void setRefreshMaxAge(int refreshMaxAge) {
-            this.refreshMaxAge = refreshMaxAge;
-        }
-
-        public boolean isSecure() {
-            return secure;
-        }
-
-        public void setSecure(boolean secure) {
-            this.secure = secure;
-        }
-
-        public String getSameSite() {
-            return sameSite;
-        }
-
-        public void setSameSite(String sameSite) {
-            this.sameSite = sameSite;
-        }
-
-        public boolean isHttpOnly() {
-            return httpOnly;
-        }
-
-        public void setHttpOnly(boolean httpOnly) {
-            this.httpOnly = httpOnly;
-        }
+        public boolean isHttpOnly() { return httpOnly; }
+        public void setHttpOnly(boolean httpOnly) { this.httpOnly = httpOnly; }
     }
 
     public static class Cors {

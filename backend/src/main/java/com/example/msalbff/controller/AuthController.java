@@ -105,6 +105,7 @@ public class AuthController {
                 return;
             }
             addCookie(response, appProperties.getCookie().getName(), idToken, appProperties.getCookie().getMaxAge());
+            session.setAttribute("msal_account_id", result.account().homeAccountId());
 
             logger.info("Login successful for user, ID token stored in HTTP-only cookie");
             response.sendRedirect(frontend + "/?login=success");
@@ -120,7 +121,8 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public void logout(HttpServletResponse response) {
+    public void logout(HttpSession session, HttpServletResponse response) {
+        session.invalidate();
         Cookie expired = new Cookie(appProperties.getCookie().getName(), "");
         expired.setHttpOnly(appProperties.getCookie().isHttpOnly());
         expired.setSecure(appProperties.getCookie().isSecure());

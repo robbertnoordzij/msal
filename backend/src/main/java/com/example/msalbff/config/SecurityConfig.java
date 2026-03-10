@@ -1,6 +1,7 @@
 package com.example.msalbff.config;
 
 import com.example.msalbff.security.CookieAuthenticationFilter;
+import com.example.msalbff.service.TokenExchangeService;
 import com.example.msalbff.service.TokenValidationService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -28,13 +29,16 @@ public class SecurityConfig {
 
     private final CorsConfigurationSource corsConfigurationSource;
     private final TokenValidationService tokenValidationService;
+    private final TokenExchangeService tokenExchangeService;
     private final AppProperties appProperties;
 
-    public SecurityConfig(CorsConfigurationSource corsConfigurationSource, 
+    public SecurityConfig(CorsConfigurationSource corsConfigurationSource,
                          TokenValidationService tokenValidationService,
+                         TokenExchangeService tokenExchangeService,
                          AppProperties appProperties) {
         this.corsConfigurationSource = corsConfigurationSource;
         this.tokenValidationService = tokenValidationService;
+        this.tokenExchangeService = tokenExchangeService;
         this.appProperties = appProperties;
     }
 
@@ -71,6 +75,6 @@ public class SecurityConfig {
      */
     @Bean
     public CookieAuthenticationFilter cookieAuthenticationFilter() {
-        return new CookieAuthenticationFilter(tokenValidationService, appProperties);
+        return new CookieAuthenticationFilter(tokenValidationService, tokenExchangeService, appProperties);
     }
 }

@@ -33,7 +33,8 @@ Entra -> TES : ID Token + Access Token
 note right of TES : Access Token stays server-side.\nAccess Token is never sent to browser.
 TES -> AC : IAuthenticationResult
 
-AC -> AC : Extract ID Token (aud=clientId)\nSet HTTP-only Secure cookie: AUTH_TOKEN
+AC -> AC : Extract ID Token (aud=clientId)\nStore homeAccountId in HTTP session: msal_account_id
+AC -> AC : Set HTTP-only Secure cookie: AUTH_TOKEN
 AC -> User : HTTP 302 Redirect to Frontend /?login=success
 
 == Authenticated API Request ==
@@ -49,11 +50,24 @@ CAF -> API : Forward authenticated request
 API -> FE : JSON Response (e.g., "Hello <name>!")
 FE -> User : Display Data
 
+== Silent Token Refresh (on expiry) ==
+
+note over CAF : Triggered when AUTH_TOKEN cookie is\nexpired OR expiring within 5 minutes
+CAF -> CAF : Read msal_account_id from HTTP session
+CAF -> TES : acquireTokenSilently(homeAccountId, scopes)
+TES -> TES : Look up IAccount in MSAL in-memory cache
+note right of TES : Refresh tokens are stored here server-side.\nThey are NEVER sent to the browser.
+TES -> Entra : Use cached refresh token\n(POST /token with refresh_token grant)
+Entra -> TES : New ID Token + Access Token
+TES -> CAF : Optional<IAuthenticationResult>
+CAF -> CAF : Validate new ID token\nUpdate AUTH_TOKEN cookie\nSet new SecurityContext
+note right of CAF : If refresh token expired/revoked,\nOptional is empty → user gets 401\nand must re-authenticate
+
 == Logout ==
 
 User -> FE : Clicks Logout
 FE -> AC : POST /api/auth/logout
-AC -> AC : Set AUTH_TOKEN cookie with maxAge=0
+AC -> AC : Invalidate HTTP session (removes msal_account_id)\nSet AUTH_TOKEN cookie with maxAge=0
 AC -> FE : 200 OK (browser deletes cookie)
 FE -> User : Show unauthenticated state
 
