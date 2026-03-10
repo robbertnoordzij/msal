@@ -1,9 +1,9 @@
 package com.example.msalbff.controller;
 
 import com.example.msalbff.config.AppProperties;
+import com.example.msalbff.service.AuthCookieService;
 import com.example.msalbff.service.TokenExchangeService;
 import com.microsoft.aad.msal4j.IAuthenticationResult;
-import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
@@ -14,10 +14,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.util.Arrays;
 import java.util.Base64;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.UUID;
 
 @RestController
@@ -28,10 +25,14 @@ public class AuthController {
     private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
 
     private final TokenExchangeService tokenExchangeService;
+    private final AuthCookieService authCookieService;
     private final AppProperties appProperties;
 
-    public AuthController(TokenExchangeService tokenExchangeService, AppProperties appProperties) {
+    public AuthController(TokenExchangeService tokenExchangeService,
+                          AuthCookieService authCookieService,
+                          AppProperties appProperties) {
         this.tokenExchangeService = tokenExchangeService;
+        this.authCookieService = authCookieService;
         this.appProperties = appProperties;
     }
 
@@ -46,7 +47,7 @@ public class AuthController {
 
             String authUrl = tokenExchangeService.generateAuthorizationUrl(
                 appProperties.getAzureAd().getRedirectUri(),
-                getScopes(),
+                appProperties.getAzureAd().scopesAsSet(),
                 state,
                 generateCodeChallenge(codeVerifier));
             response.sendRedirect(authUrl);
@@ -94,7 +95,7 @@ public class AuthController {
             session.removeAttribute("pkce_verifier");
 
             IAuthenticationResult result = tokenExchangeService.exchangeAuthorizationCode(
-                code, appProperties.getAzureAd().getRedirectUri(), getScopes(), codeVerifier);
+                code, appProperties.getAzureAd().getRedirectUri(), appProperties.getAzureAd().scopesAsSet(), codeVerifier);
 
             // Store the ID token — aud=clientId, suitable for BFF session validation.
             // The access token targets downstream APIs (e.g. Graph) and is never exposed to the browser.
@@ -104,7 +105,7 @@ public class AuthController {
                 response.sendRedirect(frontend + "/?login=error");
                 return;
             }
-            addCookie(response, appProperties.getCookie().getName(), idToken, appProperties.getCookie().getMaxAge());
+            authCookieService.setAuthCookie(response, idToken);
             session.setAttribute("msal_account_id", result.account().homeAccountId());
 
             logger.info("Login successful for user, ID token stored in HTTP-only cookie");
@@ -123,31 +124,13 @@ public class AuthController {
     @PostMapping("/logout")
     public void logout(HttpSession session, HttpServletResponse response) {
         session.invalidate();
-        Cookie expired = new Cookie(appProperties.getCookie().getName(), "");
-        expired.setHttpOnly(appProperties.getCookie().isHttpOnly());
-        expired.setSecure(appProperties.getCookie().isSecure());
-        expired.setPath("/");
-        expired.setMaxAge(0);
-        response.addCookie(expired);
+        authCookieService.clearAuthCookie(response);
         logger.info("User logged out, AUTH_TOKEN cookie cleared");
     }
 
     private String frontendUrl() {
         String[] origins = appProperties.getCors().getAllowedOrigins();
         return (origins != null && origins.length > 0) ? origins[0] : "";
-    }
-
-    private Set<String> getScopes() {
-        return new HashSet<>(Arrays.asList(appProperties.getAzureAd().getScopes().split(" ")));
-    }
-
-    private void addCookie(HttpServletResponse response, String name, String value, int maxAge) {
-        Cookie cookie = new Cookie(name, value);
-        cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
-        cookie.setSecure(appProperties.getCookie().isSecure());
-        cookie.setPath("/");
-        cookie.setMaxAge(maxAge);
-        response.addCookie(cookie);
     }
 
     private String generateCodeVerifier() {

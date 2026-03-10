@@ -1,6 +1,7 @@
 package com.example.msalbff.security;
 
 import com.example.msalbff.config.AppProperties;
+import com.example.msalbff.service.AuthCookieService;
 import com.example.msalbff.service.TokenExchangeService;
 import com.example.msalbff.service.TokenValidationService;
 import jakarta.servlet.FilterChain;
@@ -20,13 +21,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Reads the AUTH_TOKEN HTTP-only cookie on every request, validates the JWT,
@@ -53,13 +50,16 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
 
     private final TokenValidationService tokenValidationService;
     private final TokenExchangeService tokenExchangeService;
+    private final AuthCookieService authCookieService;
     private final AppProperties appProperties;
 
     public CookieAuthenticationFilter(TokenValidationService tokenValidationService,
                                       TokenExchangeService tokenExchangeService,
+                                      AuthCookieService authCookieService,
                                       AppProperties appProperties) {
         this.tokenValidationService = tokenValidationService;
         this.tokenExchangeService = tokenExchangeService;
+        this.authCookieService = authCookieService;
         this.appProperties = appProperties;
     }
 
@@ -67,7 +67,7 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        if (request.getRequestURI().startsWith("/api/auth/")) {
+        if (request.getRequestURI().startsWith("/auth/")) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -101,12 +101,12 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        tokenExchangeService.acquireTokenSilently(homeAccountId, getScopes()).ifPresent(result -> {
+        tokenExchangeService.acquireTokenSilently(homeAccountId, appProperties.getAzureAd().scopesAsSet()).ifPresent(result -> {
             String newIdToken = result.idToken();
             if (newIdToken != null && tokenValidationService.validateToken(newIdToken)) {
                 Jwt jwt = tokenValidationService.parseToken(newIdToken);
                 setAuthentication(jwt);
-                updateAuthCookie(response, newIdToken);
+                authCookieService.setAuthCookie(response, newIdToken);
                 logger.info("Token silently refreshed for user '{}'", tokenValidationService.getUserName(jwt));
             } else {
                 logger.warn("Silent refresh returned result but ID token is missing or invalid");
@@ -124,15 +124,6 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
         logger.debug("Authenticated user: {}", username);
     }
 
-    private void updateAuthCookie(HttpServletResponse response, String idToken) {
-        Cookie cookie = new Cookie(appProperties.getCookie().getName(), idToken);
-        cookie.setHttpOnly(appProperties.getCookie().isHttpOnly());
-        cookie.setSecure(appProperties.getCookie().isSecure());
-        cookie.setPath("/");
-        cookie.setMaxAge(appProperties.getCookie().getMaxAge());
-        response.addCookie(cookie);
-    }
-
     private boolean isExpiringSoon(Jwt jwt) {
         Instant expiry = jwt.getExpiresAt();
         return expiry != null && expiry.isBefore(Instant.now().plusSeconds(PROACTIVE_REFRESH_THRESHOLD_SECONDS));
@@ -144,10 +135,6 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
             return null;
         }
         return (String) session.getAttribute("msal_account_id");
-    }
-
-    private Set<String> getScopes() {
-        return new HashSet<>(Arrays.asList(appProperties.getAzureAd().getScopes().split(" ")));
     }
 
     private String extractTokenFromCookie(HttpServletRequest request) {
@@ -168,7 +155,7 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
             return Collections.emptyList();
         }
         return roles.stream()
-                .map(role -> new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
-                .collect(Collectors.toList());
+                .map(role -> (GrantedAuthority) new SimpleGrantedAuthority("ROLE_" + role.toUpperCase()))
+                .toList();
     }
 }

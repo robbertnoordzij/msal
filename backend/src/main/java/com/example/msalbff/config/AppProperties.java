@@ -3,6 +3,10 @@ package com.example.msalbff.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
 @Component
 @ConfigurationProperties(prefix = "app")
 public class AppProperties {
@@ -52,6 +56,11 @@ public class AppProperties {
 
         public String getScopes() { return scopes; }
         public void setScopes(String scopes) { this.scopes = scopes; }
+
+        /** Returns {@link #scopes} as a set, split on whitespace. */
+        public Set<String> scopesAsSet() {
+            return new HashSet<>(Arrays.asList(scopes.split(" ")));
+        }
     }
 
     public static class Cookie {

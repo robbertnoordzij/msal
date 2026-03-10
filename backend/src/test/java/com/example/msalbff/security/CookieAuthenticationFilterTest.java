@@ -1,6 +1,7 @@
 package com.example.msalbff.security;
 
 import com.example.msalbff.config.AppProperties;
+import com.example.msalbff.service.AuthCookieService;
 import com.example.msalbff.service.TokenExchangeService;
 import com.example.msalbff.service.TokenValidationService;
 import com.microsoft.aad.msal4j.IAuthenticationResult;
@@ -12,7 +13,6 @@ import jakarta.servlet.http.HttpSession;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.core.Authentication;
@@ -21,11 +21,10 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.time.Instant;
 import java.util.Optional;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -33,6 +32,7 @@ class CookieAuthenticationFilterTest {
 
     @Mock private TokenValidationService tokenValidationService;
     @Mock private TokenExchangeService tokenExchangeService;
+    @Mock private AuthCookieService authCookieService;
     @Mock private AppProperties appProperties;
     @Mock private AppProperties.Cookie cookieProperties;
     @Mock private AppProperties.AzureAd azureAdProperties;
@@ -46,15 +46,16 @@ class CookieAuthenticationFilterTest {
 
     private static final String VALID_TOKEN = "valid-token";
     private static final String ACCOUNT_ID = "oid.tid";
+    private static final String COOKIE_NAME = "AUTH_TOKEN";
 
     @BeforeEach
-    void setup() {
+    void setUp() {
         SecurityContextHolder.clearContext();
         lenient().when(appProperties.getCookie()).thenReturn(cookieProperties);
         lenient().when(appProperties.getAzureAd()).thenReturn(azureAdProperties);
         lenient().when(cookieProperties.getName()).thenReturn("AUTH_TOKEN");
         lenient().when(azureAdProperties.getScopes()).thenReturn("openid profile offline_access");
-        filter = new CookieAuthenticationFilter(tokenValidationService, tokenExchangeService, appProperties);
+        filter = new CookieAuthenticationFilter(tokenValidationService, tokenExchangeService, authCookieService, appProperties);
     }
 
     @Test
@@ -107,7 +108,7 @@ class CookieAuthenticationFilterTest {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         assertNotNull(auth);
         assertEquals("user@example.com", auth.getName());
-        verify(response).addCookie(argThat(c -> "AUTH_TOKEN".equals(c.getName()) && "new-id-token".equals(c.getValue())));
+        verify(authCookieService).setAuthCookie(eq(response), eq("new-id-token"));
     }
 
     @Test
@@ -174,7 +175,7 @@ class CookieAuthenticationFilterTest {
     // --- helpers ---
 
     private void givenAuthCookie(String token) {
-        when(request.getCookies()).thenReturn(new Cookie[]{new Cookie("AUTH_TOKEN", token)});
+        when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(COOKIE_NAME, token)});
     }
 
     private void givenSessionWithAccountId(String accountId) {

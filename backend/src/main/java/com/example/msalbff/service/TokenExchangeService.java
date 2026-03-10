@@ -96,12 +96,11 @@ public class TokenExchangeService {
 
             if (account == null) {
                 logger.debug("No cached MSAL account found for homeAccountId ending in '...{}'",
-                        abbreviate(homeAccountId));
+                        trailingCharacters(homeAccountId));
                 return Optional.empty();
             }
 
             SilentParameters parameters = SilentParameters.builder(scopes, account)
-                    .forceRefresh(false)
                     .build();
 
             IAuthenticationResult result = msalClient.acquireTokenSilently(parameters)
@@ -143,7 +142,7 @@ public class TokenExchangeService {
         return msalClient.getAuthorizationRequestUrl(parameters).toString();
     }
 
-    private String abbreviate(String value) {
+    private String trailingCharacters(String value) {
         return value != null && value.length() > 8 ? value.substring(value.length() - 8) : value;
     }
 }

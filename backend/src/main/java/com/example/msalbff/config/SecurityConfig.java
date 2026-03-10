@@ -1,6 +1,7 @@
 package com.example.msalbff.config;
 
 import com.example.msalbff.security.CookieAuthenticationFilter;
+import com.example.msalbff.service.AuthCookieService;
 import com.example.msalbff.service.TokenExchangeService;
 import com.example.msalbff.service.TokenValidationService;
 import org.springframework.context.annotation.Bean;
@@ -14,14 +15,19 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfigurationSource;
 
 /**
- * Security configuration for the BFF application
- * 
- * Key security features:
- * - Cookie-based authentication using HTTP-only cookies
- * - JWT token validation
- * - CORS configuration for frontend communication  
- * - Stateless session management
- * - Protection against CSRF (via SameSite cookies)
+ * Security configuration for the BFF application.
+ *
+ * <p>Key security features:
+ * <ul>
+ *   <li>Cookie-based authentication using HTTP-only cookies with SameSite protection</li>
+ *   <li>JWT token validation against Azure AD</li>
+ *   <li>CORS configuration for frontend communication</li>
+ *   <li>CSRF disabled — SameSite=Strict cookies provide equivalent protection</li>
+ * </ul>
+ *
+ * <p>Note: {@link SessionCreationPolicy#STATELESS} prevents Spring Security from creating
+ * sessions. The application itself still uses container-managed sessions to store PKCE
+ * verifiers and MSAL account identifiers during the OAuth flow.
  */
 @Configuration
 @EnableWebSecurity
@@ -30,51 +36,39 @@ public class SecurityConfig {
     private final CorsConfigurationSource corsConfigurationSource;
     private final TokenValidationService tokenValidationService;
     private final TokenExchangeService tokenExchangeService;
+    private final AuthCookieService authCookieService;
     private final AppProperties appProperties;
 
     public SecurityConfig(CorsConfigurationSource corsConfigurationSource,
                          TokenValidationService tokenValidationService,
                          TokenExchangeService tokenExchangeService,
+                         AuthCookieService authCookieService,
                          AppProperties appProperties) {
         this.corsConfigurationSource = corsConfigurationSource;
         this.tokenValidationService = tokenValidationService;
         this.tokenExchangeService = tokenExchangeService;
+        this.authCookieService = authCookieService;
         this.appProperties = appProperties;
     }
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-            // Enable CORS with our configuration
             .cors(cors -> cors.configurationSource(corsConfigurationSource))
-            
-            // Disable CSRF as we're using SameSite cookies and stateless authentication
             .csrf(AbstractHttpConfigurer::disable)
-            
-            // Configure session management to be stateless
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            
-            // Configure authorization rules
             .authorizeHttpRequests(authz -> authz
-                // Allow authentication endpoints without authentication
                 .requestMatchers("/auth/**").permitAll()
-                // Allow health endpoint without authentication
                 .requestMatchers("/health").permitAll()
-                // Require authentication for all other endpoints
                 .anyRequest().authenticated()
             )
-            
-            // Add our custom cookie authentication filter
             .addFilterBefore(cookieAuthenticationFilter(), UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
 
-    /**
-     * Custom authentication filter that reads JWT tokens from HTTP-only cookies
-     */
     @Bean
     public CookieAuthenticationFilter cookieAuthenticationFilter() {
-        return new CookieAuthenticationFilter(tokenValidationService, tokenExchangeService, appProperties);
+        return new CookieAuthenticationFilter(tokenValidationService, tokenExchangeService, authCookieService, appProperties);
     }
 }
