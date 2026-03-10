@@ -20,7 +20,8 @@ import static org.junit.jupiter.api.Assertions.*;
     "app.azure-ad.client-secret=test-secret",
     "app.azure-ad.authority=https://login.microsoftonline.com/test-tenant-id",
     "app.azure-ad.jwk-set-uri=https://login.microsoftonline.com/test-tenant-id/discovery/v2.0/keys",
-    "app.azure-ad.redirect-uri=http://localhost:8080/api/auth/callback"
+    "app.azure-ad.redirect-uri=http://localhost:8080/api/auth/callback",
+    "app.redis.password=test-redis-password"
 })
 public class SimpleApiControllerTest {
 

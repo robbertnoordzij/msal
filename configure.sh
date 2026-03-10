@@ -137,6 +137,14 @@ app.cookie.same-site=${COOKIE_SAME_SITE:-Lax}
 # CORS Configuration
 app.cors.allowed-origins=${FRONTEND_URL:-http://localhost:3000}
 
+# Redis — distributed MSAL token cache
+app.redis.host=${REDIS_HOST:-localhost}
+app.redis.port=${REDIS_PORT:-6379}
+app.redis.password=${REDIS_PASSWORD:-changeme-in-dev}
+app.redis.ttl=${REDIS_TTL:-90d}
+app.redis.tls=${REDIS_TLS:-false}
+app.redis.encryption-key=${REDIS_ENCRYPTION_KEY:-}
+
 # Logging
 logging.level.com.example=${LOG_LEVEL:-DEBUG}
 logging.level.org.springframework.security=${LOG_LEVEL:-DEBUG}

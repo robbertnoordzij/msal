@@ -10,30 +10,35 @@ box "Backend (Spring Boot BFF)" #LightBlue
     participant "Token Validation\nService" as TVS
     participant "API Controller" as API
 end box
+database "Redis\n(Token Cache)" as Redis
 participant "Entra ID\n(Azure AD)" as Entra
 
 == Authentication Flow ==
 
 User -> FE : Clicks Login
 FE -> AC : GET /api/auth/login
-AC -> AC : Generate PKCE Verifier & Challenge\nStore in session: pkce_verifier
-AC -> AC : Generate UUID state\nStore in session: oauth_state (CSRF protection)
+AC -> AC : Generate PKCE Verifier & Challenge
+AC -> AC : Generate UUID state (CSRF protection)
+note right of AC : State + verifier stored in short-lived\nHttpOnly SameSite=Lax cookies.\nNo server-side session needed.
 AC -> TES : generateAuthorizationUrl(scopes, state, challenge)
 TES -> AC : Auth URL (PKCE S256 + prompt=select_account)
-AC -> User : HTTP 302 Redirect to Entra ID
+AC -> User : HTTP 302 Redirect to Entra ID\n(OAUTH_STATE + PKCE_VERIFIER cookies set)
 
 User -> Entra : Authenticate & Consent
-Entra -> AC : GET /api/auth/callback?code=...&state=...\n(via Browser Redirect)
+Entra -> AC : GET /api/auth/callback?code=...&state=...\n(via Browser Redirect — cookies travel with request)
 
-AC -> AC : Validate state == session oauth_state\n(CSRF check — reject on mismatch)
-AC -> AC : Retrieve pkce_verifier from session\nClear verifier + state from session
+AC -> AC : Read OAUTH_STATE cookie\nValidate state param (CSRF check — reject on mismatch)
+AC -> AC : Read PKCE_VERIFIER cookie\nClear both OAuth flow cookies
 AC -> TES : exchangeAuthorizationCode(code, verifier)
 TES -> Entra : POST /token\n(code + code_verifier + client_secret + redirect_uri)
-Entra -> TES : ID Token + Access Token
-note right of TES : Access Token stays server-side.\nAccess Token is never sent to browser.
+Entra -> TES : ID Token + Access Token + Refresh Token
+note right of TES : Access & Refresh Tokens stay server-side.\nThey are NEVER sent to the browser.
+TES -> Redis : afterCacheAccess: write encrypted MSAL cache\n(key: msal:token-cache:{oid.tid}, AES-256-GCM)
+note right of Redis : Per-user isolation by homeAccountId (oid.tid).\nShared across all BFF replicas in the cluster.\nFault-tolerant: Redis failure → empty cache (no crash).
 TES -> AC : IAuthenticationResult
 
-AC -> AC : Extract ID Token (aud=clientId)\nStore homeAccountId in HTTP session: msal_account_id
+AC -> AC : Extract ID Token (aud=clientId)
+note right of AC : homeAccountId NOT stored in session.\nIt is derived from oid+tid JWT claims\non every request — fully stateless.
 AC -> AC : Set HTTP-only Secure cookie: AUTH_TOKEN
 AC -> User : HTTP 302 Redirect to Frontend /?login=success
 
@@ -53,12 +58,16 @@ FE -> User : Display Data
 == Silent Token Refresh (on expiry) ==
 
 note over CAF : Triggered when AUTH_TOKEN cookie is\nexpired OR expiring within 5 minutes
-CAF -> CAF : Read msal_account_id from HTTP session
+CAF -> CAF : Parse oid + tid claims from AUTH_TOKEN\nDerive homeAccountId = oid.tid
 CAF -> TES : acquireTokenSilently(homeAccountId, scopes)
-TES -> TES : Look up IAccount in MSAL in-memory cache
-note right of TES : Refresh tokens are stored here server-side.\nThey are NEVER sent to the browser.
+TES -> Redis : beforeCacheAccess: read encrypted MSAL cache\n(key: msal:token-cache:{oid.tid})
+note right of Redis : Encryption: AES-256-GCM, random IV per entry.\nIf Redis is unavailable: log WARN, start with empty cache\n(forces full re-exchange, no 500 error).
+Redis -> TES : Cached MSAL token JSON (decrypted)
+TES -> TES : Look up IAccount from deserialized cache
+note right of TES : Refresh tokens are loaded here from Redis.\nThey are NEVER sent to the browser.
 TES -> Entra : Use cached refresh token\n(POST /token with refresh_token grant)
 Entra -> TES : New ID Token + Access Token
+TES -> Redis : afterCacheAccess: write updated cache entry
 TES -> CAF : Optional<IAuthenticationResult>
 CAF -> CAF : Validate new ID token\nUpdate AUTH_TOKEN cookie\nSet new SecurityContext
 note right of CAF : If refresh token expired/revoked,\nOptional is empty → user gets 401\nand must re-authenticate
@@ -67,7 +76,10 @@ note right of CAF : If refresh token expired/revoked,\nOptional is empty → use
 
 User -> FE : Clicks Logout
 FE -> AC : POST /api/auth/logout
-AC -> AC : Invalidate HTTP session (removes msal_account_id)\nSet AUTH_TOKEN cookie with maxAge=0
+AC -> AC : Read AUTH_TOKEN cookie\nParse oid + tid claims\nDerive homeAccountId = oid.tid
+AC -> Redis : Evict cache entry (DELETE msal:token-cache:{oid.tid})
+note right of Redis : Immediate invalidation — no waiting for TTL.\nPrevents the evicted refresh token from being\nusable on any other pod in the cluster.
+AC -> AC : Set AUTH_TOKEN cookie with maxAge=0
 AC -> FE : 200 OK (browser deletes cookie)
 FE -> User : Show unauthenticated state
 

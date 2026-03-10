@@ -24,6 +24,9 @@ class TokenExchangeServiceTest {
     private AppProperties appProperties;
 
     @Mock
+    private ITokenCacheAccessAspect tokenCache;
+
+    @Mock
     private IConfidentialClientApplication msalClient;
 
     @Mock
@@ -39,7 +42,7 @@ class TokenExchangeServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new TokenExchangeService(appProperties);
+        service = new TokenExchangeService(appProperties, tokenCache);
 
         // Bypass @PostConstruct by injecting the mock directly
         Field field = TokenExchangeService.class.getDeclaredField("msalClient");

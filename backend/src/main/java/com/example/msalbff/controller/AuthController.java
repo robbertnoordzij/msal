@@ -2,12 +2,16 @@ package com.example.msalbff.controller;
 
 import com.example.msalbff.config.AppProperties;
 import com.example.msalbff.service.AuthCookieService;
+import com.example.msalbff.service.RedisMsalTokenCache;
 import com.example.msalbff.service.TokenExchangeService;
+import com.example.msalbff.service.TokenValidationService;
 import com.microsoft.aad.msal4j.IAuthenticationResult;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.net.URLEncoder;
@@ -25,14 +29,20 @@ public class AuthController {
     private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
 
     private final TokenExchangeService tokenExchangeService;
+    private final TokenValidationService tokenValidationService;
     private final AuthCookieService authCookieService;
+    private final RedisMsalTokenCache redisMsalTokenCache;
     private final AppProperties appProperties;
 
     public AuthController(TokenExchangeService tokenExchangeService,
+                          TokenValidationService tokenValidationService,
                           AuthCookieService authCookieService,
+                          RedisMsalTokenCache redisMsalTokenCache,
                           AppProperties appProperties) {
         this.tokenExchangeService = tokenExchangeService;
+        this.tokenValidationService = tokenValidationService;
         this.authCookieService = authCookieService;
+        this.redisMsalTokenCache = redisMsalTokenCache;
         this.appProperties = appProperties;
     }
 
@@ -126,9 +136,45 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public void logout(HttpServletResponse response) {
+    public void logout(HttpServletRequest request, HttpServletResponse response) {
+        evictTokenCacheForCurrentUser(request);
         authCookieService.clearAuthCookie(response);
-        logger.info("User logged out, AUTH_TOKEN cookie cleared");
+        logger.info("User logged out: AUTH_TOKEN cookie cleared and Redis cache evicted");
+    }
+
+    /**
+     * Extracts the homeAccountId (oid.tid) from the current AUTH_TOKEN cookie and
+     * evicts the corresponding entry from the Redis token cache, immediately invalidating
+     * the server-side refresh token on logout.
+     */
+    private void evictTokenCacheForCurrentUser(HttpServletRequest request) {
+        String token = extractTokenFromCookie(request);
+        if (token == null) {
+            return;
+        }
+        try {
+            Jwt jwt = tokenValidationService.parseToken(token);
+            String oid = jwt.getClaimAsString("oid");
+            String tid = jwt.getClaimAsString("tid");
+            if (oid != null && tid != null) {
+                redisMsalTokenCache.evict(oid + "." + tid);
+            }
+        } catch (Exception e) {
+            logger.debug("Could not extract account ID from token for cache eviction: {}", e.getMessage());
+        }
+    }
+
+    private String extractTokenFromCookie(HttpServletRequest request) {
+        if (request.getCookies() == null) {
+            return null;
+        }
+        String cookieName = appProperties.getCookie().getName();
+        for (Cookie cookie : request.getCookies()) {
+            if (cookieName.equals(cookie.getName())) {
+                return cookie.getValue();
+            }
+        }
+        return null;
     }
 
     private String frontendUrl() {

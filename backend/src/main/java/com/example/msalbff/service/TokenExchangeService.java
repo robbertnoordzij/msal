@@ -18,15 +18,16 @@ import java.util.concurrent.TimeoutException;
 /**
  * Handles OAuth 2.0 token acquisition via MSAL4J.
  *
- * <p>The {@link ConfidentialClientApplication} is a singleton and maintains an
- * in-memory token cache that stores refresh tokens per account. This means:
+ * <p>The {@link ConfidentialClientApplication} is a singleton and delegates its
+ * token cache to {@link RedisTokenCacheAspect}, which persists cache data in Redis.
+ * This allows all instances of the application (e.g. pods in an AKS cluster) to
+ * share the same token cache, enabling silent token refresh on any instance regardless
+ * of which instance handled the original login.
  * <ul>
- *   <li>Silent token refresh works without any additional storage.</li>
- *   <li>On application restart, the cache is lost — users must re-authenticate.
- *       For production, implement {@link ITokenCacheAccessAspect} backed by
- *       an encrypted Redis or database store.</li>
  *   <li>Refresh tokens are <b>never</b> sent to the browser. They live only in
- *       this server-side cache.</li>
+ *       the Redis-backed server-side cache.</li>
+ *   <li>On Redis unavailability the cache falls back to an empty state for that
+ *       operation; the user will be re-authenticated at next request.</li>
  * </ul>
  */
 @Service
@@ -36,12 +37,14 @@ public class TokenExchangeService {
     private static final int TOKEN_EXCHANGE_TIMEOUT_SECONDS = 30;
 
     private final AppProperties appProperties;
+    private final ITokenCacheAccessAspect tokenCache;
 
     // Field typed as interface for testability; initialised by @PostConstruct init()
     IConfidentialClientApplication msalClient;
 
-    public TokenExchangeService(AppProperties appProperties) {
+    public TokenExchangeService(AppProperties appProperties, ITokenCacheAccessAspect tokenCache) {
         this.appProperties = appProperties;
+        this.tokenCache = tokenCache;
     }
 
     @PostConstruct
@@ -50,8 +53,10 @@ public class TokenExchangeService {
         IClientCredential credential = ClientCredentialFactory.createFromSecret(azureAd.getClientSecret());
         msalClient = ConfidentialClientApplication.builder(azureAd.getClientId(), credential)
             .authority(azureAd.getAuthority())
+            .setTokenCacheAccessAspect(tokenCache)
             .build();
-        logger.info("MSAL ConfidentialClientApplication initialised for tenant {}", azureAd.getTenantId());
+        logger.info("MSAL ConfidentialClientApplication initialised for tenant {} with Redis token cache",
+                azureAd.getTenantId());
     }
 
     public IAuthenticationResult exchangeAuthorizationCode(String code, String redirectUri, Set<String> scopes, String codeVerifier) throws Exception {
@@ -95,8 +100,8 @@ public class TokenExchangeService {
                     .orElse(null);
 
             if (account == null) {
-                logger.debug("No cached MSAL account found for homeAccountId ending in '...{}'",
-                        trailingCharacters(homeAccountId));
+                logger.debug("No cached MSAL account found for homeAccountId ending in '{}'",
+                        LogSanitizer.obfuscate(homeAccountId));
                 return Optional.empty();
             }
 
@@ -140,9 +145,5 @@ public class TokenExchangeService {
                 .build();
 
         return msalClient.getAuthorizationRequestUrl(parameters).toString();
-    }
-
-    private String trailingCharacters(String value) {
-        return value != null && value.length() > 8 ? value.substring(value.length() - 8) : value;
     }
 }

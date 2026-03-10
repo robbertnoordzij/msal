@@ -129,6 +129,14 @@ app.cookie.same-site=$($env_vars['COOKIE_SAME_SITE'])
 # CORS Configuration
 app.cors.allowed-origins=$($env_vars['FRONTEND_URL'])
 
+# Redis — distributed MSAL token cache
+app.redis.host=$($env_vars.ContainsKey('REDIS_HOST') ? $env_vars['REDIS_HOST'] : 'localhost')
+app.redis.port=$($env_vars.ContainsKey('REDIS_PORT') ? $env_vars['REDIS_PORT'] : '6379')
+app.redis.password=$($env_vars.ContainsKey('REDIS_PASSWORD') ? $env_vars['REDIS_PASSWORD'] : 'changeme-in-dev')
+app.redis.ttl=$($env_vars.ContainsKey('REDIS_TTL') ? $env_vars['REDIS_TTL'] : '90d')
+app.redis.tls=$($env_vars.ContainsKey('REDIS_TLS') ? $env_vars['REDIS_TLS'] : 'false')
+app.redis.encryption-key=$($env_vars.ContainsKey('REDIS_ENCRYPTION_KEY') ? $env_vars['REDIS_ENCRYPTION_KEY'] : '')
+
 # Logging
 logging.level.com.example=$($env_vars['LOG_LEVEL'])
 logging.level.org.springframework.security=$($env_vars['LOG_LEVEL'])

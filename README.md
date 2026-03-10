@@ -73,8 +73,9 @@ Summarised:
 Key properties:
 - The **frontend never sees a token**. It only navigates to `/auth/login` and reads API responses.
 - The **auth code exchange** happens server-to-server between the BFF and Entra ID.
-- **Refresh tokens** live only in MSAL4J's server-side in-memory cache — they never leave the backend.
+- **Refresh tokens** live only in MSAL4J's server-side Redis cache — they never leave the backend.
 - **No server-side session** is used. The MSAL account ID for silent refresh is derived from `oid`+`tid` claims in the JWT already stored in the cookie.
+- **Redis** ensures the token cache is shared across all BFF replicas in an AKS cluster — each user's cache entry is isolated by `homeAccountId` (`oid.tid`).
 
 ---
 
@@ -220,7 +221,84 @@ public Optional<IAuthenticationResult> acquireTokenSilently(String homeAccountId
 }
 ```
 
-> **Production note:** MSAL4J's token cache is in-memory. On application restart, the cache is lost and all users must re-authenticate. For production, implement `ITokenCacheAccessAspect` backed by an encrypted Redis or database store.
+---
+
+### 4. Distributed Token Cache (Redis)
+
+**Why the in-memory cache breaks in a cluster**
+
+MSAL4J's default token cache is a plain Java `HashMap` inside the `ConfidentialClientApplication` instance. When you run a single backend pod this works fine, but in a horizontally-scaled deployment (AKS, Cloud Foundry, any replicated service):
+
+```
+Pod A  → login → cache contains refresh token for alice
+Pod B  → next request from alice → cache is empty → silent refresh fails → 401
+```
+
+Every replica has its own in-memory island. Users whose requests land on a different pod after login either get a 401 or are forced to re-authenticate — unacceptable in production.
+
+**Why Redis is the right fix**
+
+Redis is a shared, low-latency key–value store. By implementing MSAL4J's `ITokenCacheAccessAspect` interface and backing it with Redis, every pod reads and writes the same cache:
+
+```
+Pod A  → login → Redis["msal:token-cache:oid.tid"] = <encrypted MSAL JSON>
+Pod B  → next request → reads Redis["msal:token-cache:oid.tid"] → silent refresh succeeds
+```
+
+The cache entry is **keyed per user** using the `homeAccountId` (composite of Entra `oid` + `tid` claims), which means:
+- Each user has an isolated cache entry — no cross-user cache leakage.
+- App-level entries (client credential flows) use `msal:token-cache:app:{clientId}`.
+
+**Security hardening applied**
+
+| Concern | Mitigation |
+|---|---|
+| Token cache at rest | AES-256-GCM encryption with a per-entry random 12-byte IV (`TokenCacheEncryption.java`). Configured via `REDIS_ENCRYPTION_KEY` (32-byte base64). |
+| Unencrypted-key warning | If `REDIS_ENCRYPTION_KEY` is not set, a `SECURITY WARN` is logged on startup and tokens are stored as plaintext — acceptable for dev, unacceptable for production. |
+| Redis network exposure | Dev: Redis binds to `127.0.0.1` only (not `0.0.0.0`). Production: set `REDIS_TLS=true` to enable TLS/SSL via Lettuce. |
+| Redis password | `requirepass` enforced in `docker-compose.yml`. Set `REDIS_PASSWORD` in `.env`. |
+| Redis outage | Both `beforeCacheAccess` and `afterCacheAccess` are wrapped in try-catch. On a Redis failure the BFF falls back to an empty cache (forcing full token exchange) rather than throwing a 500. |
+| Logout invalidation | `POST /auth/logout` reads the `AUTH_TOKEN` cookie, derives `homeAccountId`, and calls `RedisMsalTokenCache.evict()` to delete the Redis key immediately — no wait for TTL expiry. |
+
+**`RedisMsalTokenCache.java`** — [`backend/src/main/java/com/example/msalbff/service/RedisMsalTokenCache.java`](backend/src/main/java/com/example/msalbff/service/RedisMsalTokenCache.java)
+
+```java
+@Override
+public void beforeCacheAccess(ITokenCacheAccessContext context) {
+    try {
+        String key = partitionKey(context);
+        String cached = redis.opsForValue().get(key);
+        if (cached != null) {
+            context.tokenCache().deserialize(encryption.decrypt(cached));
+        }
+    } catch (Exception e) {
+        log.warn("Redis read failed — starting with empty MSAL cache: {}", e.getMessage());
+    }
+}
+
+@Override
+public void afterCacheAccess(ITokenCacheAccessContext context) {
+    if (!context.hasCacheChanged()) return;
+    try {
+        String key = partitionKey(context);
+        String serialized = encryption.encrypt(context.tokenCache().serialize());
+        redis.opsForValue().set(key, serialized, properties.getRedis().getTtl());
+    } catch (Exception e) {
+        log.warn("Redis write failed — cache not persisted: {}", e.getMessage());
+    }
+}
+```
+
+The partition key is derived from `context.account()` when available (user flows) or falls back to the client ID (app-credential flows):
+
+```java
+private String partitionKey(ITokenCacheAccessContext context) {
+    String suffix = context.account() != null
+        ? context.account().homeAccountId()
+        : APP_PARTITION_PREFIX + context.clientId();
+    return CACHE_KEY_PREFIX + suffix;
+}
+```
 
 ---
 
@@ -230,7 +308,8 @@ public Optional<IAuthenticationResult> acquireTokenSilently(String homeAccountId
 msal/
 ├── .env.example              ← Template — copy to .env and fill in values
 ├── configure.sh / .ps1       ← Generates config files from .env
-├── runall.sh / .ps1          ← Full build + start both services
+├── runall.sh / .ps1          ← Full build + start both services (incl. Redis)
+├── docker-compose.yml        ← Redis 7 (loopback-only, requirepass, AOF persistence)
 ├── docs/
 │   └── token-flow.puml       ← Full auth flow diagram (PlantUML)
 ├── frontend/                 ← React SPA
@@ -240,11 +319,12 @@ msal/
 │       └── App.js
 └── backend/                  ← Spring Boot BFF
     └── src/main/java/com/example/msalbff/
-        ├── config/           ← AppProperties.java
+        ├── config/           ← AppProperties.java, RedisConfig.java
         ├── controller/       ← AuthController.java, SimpleApiController.java
         ├── security/         ← CookieAuthenticationFilter.java, SecurityConfig.java
         └── service/          ← TokenExchangeService.java, TokenValidationService.java,
-                                 AuthCookieService.java
+                                 AuthCookieService.java, RedisMsalTokenCache.java,
+                                 TokenCacheEncryption.java, LogSanitizer.java
 ```
 
 Generated files (`msalConfig.js`, `application.properties`) are excluded from git. Always edit `.env`.
@@ -257,6 +337,7 @@ Generated files (`msalConfig.js`, `application.properties`) are excluded from gi
 
 - Java 17+ and Maven
 - Node 18+
+- Docker (for Redis)
 - An Azure AD App Registration (see [Configuring the App Registration](#configuring-the-app-registration) below)
 
 ### Steps
@@ -294,9 +375,10 @@ AZURE_CLIENT_SECRET=<your-client-secret>
 
 This will:
 1. Generate `frontend/src/config/msalConfig.js` and `backend/src/main/resources/application.properties` from your `.env`
-2. Install frontend npm dependencies
-3. Build and test the backend with Maven
-4. Open two Terminal windows — one for the backend (`:8080`), one for the frontend (`:3000`)
+2. Start Redis via `docker compose up -d redis` (requires Docker)
+3. Install frontend npm dependencies
+4. Build and test the backend with Maven
+5. Open two Terminal windows — one for the backend (`:8080`), one for the frontend (`:3000`)
 
 **4. Open the app**
 
@@ -316,6 +398,12 @@ All configuration lives in `.env`. Running `./configure.sh` (or `./configure.ps1
 | `COOKIE_SECURE` | `false` | Set to `true` when running over HTTPS |
 | `COOKIE_SAME_SITE` | `Lax` | Use `Strict` in production |
 | `LOG_LEVEL` | `DEBUG` | Set to `INFO` in production |
+| `REDIS_HOST` | `localhost` | Redis hostname |
+| `REDIS_PORT` | `6379` | Redis port (use `6380` for Azure Cache for Redis TLS) |
+| `REDIS_PASSWORD` | `changeme-in-dev` | Redis AUTH password (`requirepass`) |
+| `REDIS_TTL` | `90d` | Cache entry TTL (Spring Duration format: `90d`, `3600s`) |
+| `REDIS_TLS` | `false` | Enable TLS/SSL — set `true` for Azure Cache for Redis |
+| `REDIS_ENCRYPTION_KEY` | _(blank)_ | AES-256-GCM key: generate with `openssl rand -base64 32`. **Required for production.** |
 
 ---
 
@@ -374,7 +462,10 @@ The redirect URI is where Entra ID sends the authorization code after login. In 
 | **XSS protection** | `HttpOnly` flag prevents JavaScript from reading the cookie |
 | **CSRF protection** | `SameSite=Strict` (prod) / `SameSite=Lax` (dev) + `state` parameter check |
 | **PKCE** | Code verifier stored in a short-lived `HttpOnly` cookie; never in JS |
-| **Refresh tokens** | Server-side only (MSAL4J in-memory cache); never sent to browser |
+| **Refresh tokens** | Server-side only (MSAL4J cache in Redis); never sent to browser |
+| **Token cache at rest** | AES-256-GCM encryption in Redis (per-entry random IV); opt-in via `REDIS_ENCRYPTION_KEY` |
+| **Token cache isolation** | Per-user Redis key (`msal:token-cache:{oid.tid}`); logout triggers immediate eviction |
+| **Redis network** | Dev: loopback-only (`127.0.0.1`), `requirepass`. Prod: TLS via `REDIS_TLS=true` |
 | **Token validation** | Signature verified against Entra ID JWK Set; `iss`, `aud`, `exp` checked |
 | **Stateless backend** | No `HttpSession` used — `homeAccountId` derived from JWT `oid`+`tid` claims |
 
@@ -403,7 +494,7 @@ The redirect URI is where Entra ID sends the authorization code after login. In 
 | CORS error | Origin mismatch | `FRONTEND_URL` in `.env` must match the browser's origin exactly |
 | Cookie missing in dev tools | `HttpOnly` hides it from the JS console | Use the **Application → Cookies** tab in DevTools; it will be listed there |
 | Silent refresh not working | `offline_access` scope missing or admin consent not granted | Add `offline_access` and grant admin consent in Entra ID |
-| Backend restart loses sessions | Expected — MSAL4J cache is in-memory | Re-authenticate after restarting the backend; use a persistent cache for production |
+| Backend restart loses sessions | Expected only if Redis is down | MSAL4J refresh tokens are stored in Redis and survive pod restarts. If Redis itself is unavailable, users must re-authenticate. |
 
 ---
 
@@ -412,9 +503,12 @@ The redirect URI is where Entra ID sends the authorization code after login. In 
 - [ ] `COOKIE_SECURE=true` (requires HTTPS)
 - [ ] `COOKIE_SAME_SITE=Strict`
 - [ ] `LOG_LEVEL=INFO`
-- [ ] Replace MSAL4J in-memory token cache with a persistent, encrypted store (Redis / database) implementing `ITokenCacheAccessAspect`
+- [x] Distributed token cache backed by Redis (`RedisMsalTokenCache` implementing `ITokenCacheAccessAspect`)
+- [ ] Set `REDIS_ENCRYPTION_KEY` to a random 32-byte base64 key (`openssl rand -base64 32`)
+- [ ] Set `REDIS_TLS=true` and `REDIS_PORT=6380` for Azure Cache for Redis (TLS endpoint)
+- [ ] Store `REDIS_ENCRYPTION_KEY`, `REDIS_PASSWORD`, and `AZURE_CLIENT_SECRET` in a secrets manager (e.g. Azure Key Vault)
 - [ ] Set security headers: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Content-Type-Options`
-- [ ] Rotate client secrets regularly and store them in a secrets manager (e.g. Azure Key Vault)
+- [ ] Rotate client secrets regularly
 - [ ] Enable Conditional Access policies and token protection in Entra ID
 
 ---

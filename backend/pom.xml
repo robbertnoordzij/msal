@@ -59,6 +59,12 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
         
+        <!-- Redis for distributed MSAL token cache -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- MSAL Java for backend token handling -->
         <dependency>
             <groupId>com.microsoft.azure</groupId>

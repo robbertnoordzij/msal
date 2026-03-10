@@ -15,6 +15,31 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 
+# Step 2: Start Redis via Docker Compose
+Write-Host "Step 2: Starting Redis (Docker Compose)..." -ForegroundColor Cyan
+if (Get-Command docker -ErrorAction SilentlyContinue) {
+    docker compose up -d redis
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "⚠ Docker Compose failed to start Redis. Ensure Docker is running." -ForegroundColor Yellow
+        Write-Host "  The backend requires Redis on localhost:6379. Start it manually if needed." -ForegroundColor Yellow
+    } else {
+        Write-Host "✓ Redis started" -ForegroundColor Green
+        Write-Host "Waiting for Redis to be ready..." -ForegroundColor Gray
+        $ready = $false
+        for ($i = 0; $i -lt 10; $i++) {
+            $ping = docker compose exec -T redis redis-cli ping 2>$null
+            if ($ping -match "PONG") { $ready = $true; break }
+            Start-Sleep -Seconds 1
+        }
+        if ($ready) { Write-Host "✓ Redis is ready" -ForegroundColor Green }
+    }
+} else {
+    Write-Host "⚠ Docker not found — skipping Redis startup." -ForegroundColor Yellow
+    Write-Host "  Please ensure Redis is running on localhost:6379 before starting the backend." -ForegroundColor Yellow
+}
+
+Write-Host ""
+
 # Check if required directories exist
 if (-not (Test-Path "backend")) {
     Write-Host "Error: backend directory not found!" -ForegroundColor Red
@@ -27,7 +52,7 @@ if (-not (Test-Path "frontend")) {
 }
 
 # Setup Phase: Install dependencies and build
-Write-Host "Step 2: Setting up dependencies and building..." -ForegroundColor Cyan
+Write-Host "Step 3: Setting up dependencies and building..." -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "Installing frontend dependencies..." -ForegroundColor Yellow

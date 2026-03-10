@@ -27,6 +27,32 @@ fi
 
 echo ""
 
+# Step 2: Start Redis via Docker Compose
+echo -e "${CYAN}Step 2: Starting Redis (Docker Compose)...${NC}"
+if command -v docker &> /dev/null; then
+    docker compose up -d redis
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}⚠ Docker Compose failed to start Redis. Ensure Docker is running.${NC}"
+        echo -e "${YELLOW}  The backend requires Redis on localhost:6379. Start it manually if needed.${NC}"
+    else
+        echo -e "${GREEN}✓ Redis started${NC}"
+        # Brief wait for Redis healthcheck to pass
+        echo -e "${GRAY}Waiting for Redis to be ready...${NC}"
+        for i in $(seq 1 10); do
+            if docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
+                echo -e "${GREEN}✓ Redis is ready${NC}"
+                break
+            fi
+            sleep 1
+        done
+    fi
+else
+    echo -e "${YELLOW}⚠ Docker not found — skipping Redis startup.${NC}"
+    echo -e "${YELLOW}  Please ensure Redis is running on localhost:6379 before starting the backend.${NC}"
+fi
+
+echo ""
+
 # Check if required directories exist
 if [ ! -d "backend" ]; then
     echo -e "${RED}Error: backend directory not found!${NC}"
@@ -39,7 +65,7 @@ if [ ! -d "frontend" ]; then
 fi
 
 # Setup Phase: Install dependencies and build
-echo -e "${CYAN}Step 2: Setting up dependencies and building...${NC}"
+echo -e "${CYAN}Step 3: Setting up dependencies and building...${NC}"
 echo ""
 
 echo -e "${YELLOW}Installing frontend dependencies...${NC}"
