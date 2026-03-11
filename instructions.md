@@ -832,6 +832,157 @@ Use wherever `homeAccountId` or Redis keys appear in log statements.
 
 ---
 
+## Tests
+
+Write tests alongside each source file. The project uses **JUnit 5 + Mockito** (provided by `spring-boot-starter-test`). Do **not** add `mockito-inline` — use the patterns below to stay within what the starter provides.
+
+### Unit test structure
+
+Place tests under `src/test/java` mirroring the source package. Use `@ExtendWith(MockitoExtension.class)` for pure unit tests and `@SpringBootTest` only when Spring context wiring must be verified.
+
+```
+src/test/java/com/example/msalbff/
+├── config/
+│   └── AppPropertiesTest.java          ← validates property defaults & validation
+├── security/
+│   ├── CookieAuthenticationFilterTest.java
+│   └── TokenCookieHelperTest.java
+├── service/
+│   ├── TokenExchangeServiceTest.java
+│   ├── CookieMsalTokenCacheServiceTest.java
+│   └── RedisMsalTokenCacheServiceTest.java
+└── controller/
+    └── AuthControllerTest.java
+```
+
+### What to test per class
+
+#### `TokenExchangeService`
+
+Cover every credential path in `buildCredential()`:
+
+```java
+@ExtendWith(MockitoExtension.class)
+class TokenExchangeServiceTest {
+
+    @Nested
+    @MockitoSettings(strictness = Strictness.LENIENT) // required: createFromCallback is eager
+    class BuildCredential {
+
+        @Test
+        void secret_mode_returnsClientSecretCredential() {
+            // arrange: credentialType="secret", clientSecret="my-secret"
+            // act: service.init()
+            // assert: no exception, confidentialClientApplication is non-null
+        }
+
+        @Test
+        void secret_mode_throwsWhenClientSecretBlank() {
+            // arrange: credentialType="secret", clientSecret=""
+            // assert: throws IllegalStateException mentioning "azure-ad.client-secret"
+        }
+
+        @Test
+        void managedIdentity_systemAssigned_buildsCredentialWithoutClientId() {
+            // arrange: credentialType="managed-identity", managedIdentityClientId=""
+            // spy on service; doReturn(mockMiCredential).when(spy).buildManagedIdentityTokenCredential(...)
+            // assert: buildManagedIdentityTokenCredential called with empty clientId
+        }
+
+        @Test
+        void managedIdentity_userAssigned_passesClientIdToTokenCredential() {
+            // arrange: credentialType="managed-identity", managedIdentityClientId="mi-client-id"
+            // spy on service; doReturn(mockMiCredential).when(spy).buildManagedIdentityTokenCredential(...)
+            // assert: buildManagedIdentityTokenCredential called with correct clientId
+        }
+    }
+
+    @Nested
+    class AcquireToken { /* test exchangeCodeForTokens, acquireTokenSilently */ }
+}
+```
+
+> **Why `@MockitoSettings(LENIENT)` on the MI tests?**
+> `ClientCredentialFactory.createFromCallback(Callable)` is **eager**: it submits the callable to an internal executor and calls `future.get()` synchronously. The callable may (or may not) be observed by Mockito's stub accounting depending on thread scheduling. `LENIENT` prevents a spurious `UnnecessaryStubbing` failure.
+
+> **Why a protected factory method?**
+> `MockedConstruction<ManagedIdentityCredentialBuilder>` requires `mockito-inline`, which is not on the classpath. Extracting `protected buildManagedIdentityTokenCredential(AzureAd)` lets a `spy(service)` override the method directly without constructor mocking.
+
+#### `CookieMsalTokenCacheService`
+
+```java
+@ExtendWith(MockitoExtension.class)
+class CookieMsalTokenCacheServiceTest {
+
+    // Inject a mock HttpServletRequest / HttpServletResponse via
+    // MockHttpServletRequest / MockHttpServletResponse (spring-test provides these)
+
+    @Test void beforeCacheAccess_loadsFromCookie_whenCookiePresent() { ... }
+    @Test void beforeCacheAccess_usesEmptyCache_whenCookieAbsent() { ... }
+    @Test void afterCacheAccess_writesCookie_whenCacheChanged() { ... }
+    @Test void afterCacheAccess_skipsWrite_whenCacheUnchanged() { ... }
+    @Test void afterCacheAccess_skipsWrite_whenSerializedExceedsSizeLimit() { ... }
+    @Test void afterCacheAccess_skipsWrite_outsideRequestScope() { ... }
+    @Test void evict_clearsCookie() { ... }
+}
+```
+
+Always test the **size-limit guard**: serialize a realistic token cache string that exceeds 4 090 bytes and assert no cookie is written (and a warning is logged).
+
+#### `RedisMsalTokenCacheService`
+
+```java
+@ExtendWith(MockitoExtension.class)
+class RedisMsalTokenCacheServiceTest {
+
+    @Mock RedisTemplate<String, String> redisTemplate;
+    @Mock ValueOperations<String, String> valueOps;
+
+    @Test void beforeCacheAccess_loadsFromRedis_whenKeyExists() { ... }
+    @Test void beforeCacheAccess_usesEmptyCache_whenKeyAbsent() { ... }
+    @Test void afterCacheAccess_writesToRedis_whenCacheChanged() { ... }
+    @Test void afterCacheAccess_skipsWrite_whenCacheUnchanged() { ... }
+    @Test void evict_deletesRedisKey() { ... }
+}
+```
+
+#### `CookieAuthenticationFilter`
+
+Use `MockHttpServletRequest` / `MockHttpServletResponse` and a `MockFilterChain`. Test both the **happy path** (valid JWT → SecurityContext populated) and the edge cases:
+
+```java
+@Test void validToken_populatesSecurityContext() { ... }
+@Test void expiredToken_clearsSecurityContext_returns401() { ... }
+@Test void missingAuthToken_withMsalCache_triggersSessionRestore() { ... }
+@Test void missingAuthToken_withoutMsalCache_doesNotCallSilentRefresh() { ... }
+@Test void nearExpiryToken_triggersProactiveRefresh() { ... }
+@Test void farFromExpiryToken_skipsRefresh() { ... }
+```
+
+#### `AuthController`
+
+Use `@WebMvcTest(AuthController.class)` with mocked services to test HTTP-level behavior:
+
+```java
+@Test void login_redirectsToAzureAdUrl() { ... }
+@Test void callback_setsAuthCookie_onSuccess() { ... }
+@Test void callback_redirectsToErrorPage_onStateMismatch() { ... }
+@Test void logout_clearsCookiesAndEvictsCache() { ... }
+```
+
+### Running tests
+
+```bash
+cd backend
+mvn test                          # run all tests
+mvn test -pl . -Dtest=TokenExchangeServiceTest   # single class
+mvn verify                        # tests + integration checks
+```
+
+All tests must pass (`BUILD SUCCESS`) before committing. The CI pipeline treats a failing test as a blocking error.
+
+---
+
 ## Frontend Repository — React (or any SPA)
 
 The frontend has **no MSAL library dependency**. It only needs to:
