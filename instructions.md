@@ -1,6 +1,19 @@
 # MSAL Secure BFF Authentication — Implementation Instructions
 
-These instructions enable a Copilot instance to implement the **Backend-for-Frontend (BFF) MSAL authentication pattern** into an existing codebase. The pattern uses a Spring Boot backend as the sole token handler, stores the Azure AD ID token in an **HTTP-only cookie**, and uses **Redis** to cache refresh tokens server-side so that no secrets or refresh tokens are ever sent to the browser.
+These instructions enable a Copilot instance to implement the **Backend-for-Frontend (BFF) MSAL authentication pattern** into an existing codebase. The pattern uses a Spring Boot backend as the sole token handler, stores the Azure AD ID token in an **HTTP-only cookie**, and caches refresh tokens server-side so that no secrets or refresh tokens are ever sent to the browser.
+
+---
+
+## 🤖 Copilot Instance — Start Here
+
+**Before writing any code, ask the user:**
+
+> "Which token cache backend would you like to use for storing MSAL refresh tokens?
+>
+> - **Option A: Redis** *(default)* — requires a Redis instance (Docker locally, Azure Cache for Redis in production). Best for clustered / multi-replica deployments where all pods share the same cache.
+> - **Option B: Cookie** — no external infrastructure required. The encrypted refresh token is stored in an AES-256-GCM encrypted HTTP-only cookie (`MSAL_TOKEN_CACHE`). Best for single-instance / no-Redis deployments."
+
+Record the answer and follow the sections marked **[Redis only]** or **[Cookie only]** throughout this guide. Sections with no tag apply to both.
 
 ---
 
@@ -15,18 +28,23 @@ Spring Boot BFF  (/api/auth/*)
     ▼
 Azure Entra ID (Azure AD)
 
-Spring Boot BFF  (token cache)
+Spring Boot BFF  (token cache — choose one)
     │  AES-256-GCM encrypted MSAL cache per user
-    ▼
-Redis  (key: msal:token-cache:{oid.tid})
+    ├─[Redis]──▶ Redis  (key: msal:token-cache:{oid.tid})
+    └─[Cookie]─▶ MSAL_TOKEN_CACHE cookie (HttpOnly, SameSite=Strict)
 ```
 
-**Key security properties:**
-- The browser **never** sees access tokens or refresh tokens.
+**Key security properties (both backends):**
+- The browser **never** sees access tokens or refresh tokens in plain text.
 - JWT ID token is validated on every request against Azure AD's JWK Set endpoint.
-- Refresh tokens live only in Redis, encrypted at rest with AES-256-GCM.
+- Refresh tokens are encrypted at rest with AES-256-GCM before storage.
 - PKCE (S256) and a random `state` cookie prevent CSRF and code-injection attacks.
 - `SameSite=Strict` on `AUTH_TOKEN` provides CSRF protection; `SameSite=Lax` on OAuth flow cookies is required so the Azure AD redirect carries them back.
+
+**Cookie cache additional notes:**
+- Only the `RefreshToken` and `Account` sections of the MSAL cache are stored in the cookie (access tokens and ID tokens are stripped to keep the payload within the 4 KB browser cookie limit).
+- Cookie cache is bound to the user's browser — no clustering support.
+- Requires a unique `app.token-cache.cookie.encryption-key` (startup fails if absent).
 
 ---
 
@@ -46,11 +64,21 @@ In the [Azure Portal → Entra ID → App registrations](https://portal.azure.co
    - Enable **ID tokens** under Implicit grant (optional; not required for auth-code flow).
 5. **API permissions**: `openid`, `profile`, `offline_access`, `User.Read` (delegated).
 
-### 2. Redis
+### 2. Redis **[Redis only]**
 
 - **Local dev**: use the provided `docker-compose.yml` — it starts Redis 7 with a password.
 - **Production**: Azure Cache for Redis (set `REDIS_TLS=true`, port 6380) or equivalent.
 - Redis is **required** for silent token refresh across multiple backend replicas. Without it, token refresh still works on a single instance (MSAL falls back to in-memory cache with a WARN log).
+
+### 2. Encryption key **[Cookie only]**
+
+Generate a 32-byte AES-256 key and keep it secret:
+
+```sh
+openssl rand -base64 32
+```
+
+Store it as `TOKEN_CACHE_COOKIE_ENCRYPTION_KEY` in your `.env` / secret manager. **The backend refuses to start without it when cookie mode is active.**
 
 ---
 
@@ -75,7 +103,7 @@ Add the following to `<dependencies>`:
     <artifactId>spring-security-oauth2-jose</artifactId>
 </dependency>
 
-<!-- Redis for distributed MSAL token cache -->
+<!-- Redis for distributed MSAL token cache [Redis only] -->
 <dependency>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-data-redis</artifactId>
@@ -99,6 +127,8 @@ Add the following to `<dependencies>`:
     <optional>true</optional>
 </dependency>
 ```
+
+> **[Cookie only]** The Redis dependency above can be omitted. Jackson (`com.fasterxml.jackson.databind`) is already present via `spring-boot-starter-web` and is used to strip large token sections before encryption.
 
 Add to `<build><plugins>` (required for Mockito on JDK 21+; keep if tests are added):
 
@@ -147,15 +177,24 @@ app.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
 app.cors.allowed-headers=*
 app.cors.allow-credentials=true
 
-# Redis
+# Token cache backend: "redis" (default, requires Redis) | "cookie" (no infrastructure needed)
+app.token-cache.type=${TOKEN_CACHE_TYPE:redis}
+
+# [Redis only] Redis connection
 app.redis.host=${REDIS_HOST:localhost}
 app.redis.port=${REDIS_PORT:6379}
 app.redis.password=${REDIS_PASSWORD}
 app.redis.ttl=90d               # Spring Duration: "90d", "24h", "3600s"
 app.redis.tls=false             # true for Azure Cache for Redis (port 6380)
-# AES-256-GCM key for token cache encryption. Generate: openssl rand -base64 32
-# Leave empty only for local dev (a WARN will be logged).
+# AES-256-GCM key for Redis token cache encryption. Generate: openssl rand -base64 32
 app.redis.encryption-key=${REDIS_ENCRYPTION_KEY:}
+
+# [Cookie only] Cookie cache settings
+# Required when app.token-cache.type=cookie (startup fails if blank)
+app.token-cache.cookie.encryption-key=${TOKEN_CACHE_COOKIE_ENCRYPTION_KEY:}
+app.token-cache.cookie.name=MSAL_TOKEN_CACHE
+app.token-cache.cookie.max-age=90d
+app.token-cache.cookie.secure=${COOKIE_SECURE:true}
 ```
 
 ### 3. Source Files to Create
@@ -166,7 +205,7 @@ Use the **exact package structure** that matches your project's base package. Al
 
 #### `config/AppProperties.java`
 
-Binds all `app.*` properties. Contains nested static classes: `AzureAd`, `Cookie`, `Cors`, `Redis`.
+Binds all `app.*` properties. Contains nested static classes: `AzureAd`, `Cookie`, `Cors`, `Redis`, `TokenCache`.
 
 ```java
 @Component
@@ -176,6 +215,7 @@ public class AppProperties {
     private final Cookie cookie = new Cookie();
     private final Cors cors = new Cors();
     private final Redis redis = new Redis();
+    private final TokenCache tokenCache = new TokenCache();
 
     // getters for each nested class ...
 
@@ -184,7 +224,11 @@ public class AppProperties {
         private String scopes = "openid profile offline_access User.Read";
 
         public Set<String> scopesAsSet() {
-            return new HashSet<>(Arrays.asList(scopes.split(" ")));
+            // split on whitespace, trim, filter blanks
+            return Arrays.stream(scopes.split("\\s+"))
+                         .map(String::trim)
+                         .filter(s -> !s.isEmpty())
+                         .collect(Collectors.toSet());
         }
         // standard getters/setters ...
     }
@@ -212,19 +256,44 @@ public class AppProperties {
         private String password;
         private java.time.Duration ttl = java.time.Duration.ofDays(90);
         private boolean tls = false;
+        private String encryptionKey;  // base64-encoded 32-byte AES key
         // standard getters/setters ...
+    }
+
+    /** Selects between Redis and Cookie cache backends; binds app.token-cache.* */
+    public static class TokenCache {
+        private String type = "redis";  // "redis" | "cookie"
+        private final CookieStore cookie = new CookieStore();
+        // standard getters/setters ...
+
+        /** Binds app.token-cache.cookie.* — required only when type=cookie */
+        public static class CookieStore {
+            private String name = "MSAL_TOKEN_CACHE";
+            private java.time.Duration maxAge = java.time.Duration.ofDays(90);
+            private String encryptionKey;  // required; startup fails if blank
+            private boolean secure = true;
+            // standard getters/setters ...
+        }
     }
 }
 ```
 
+> **Important:** `TokenCache.CookieStore` uses a nested dot in the property name
+> (`app.token-cache.cookie.*`). Spring Boot binds the `cookie` sub-object correctly
+> because `CookieStore` is a nested static class with its own `@ConfigurationProperties`-style
+> binding. **Do not** flatten these as `cookieName`, `cookieEncryptionKey` etc. on
+> `TokenCache` directly — Spring would try to bind `app.token-cache.cookie-name` (hyphen),
+> which would mismatch the intended dot-notation keys.
+
 ---
 
-#### `config/RedisConfig.java`
+#### `config/RedisConfig.java` **[Redis only]**
 
-Creates a `RedisConnectionFactory` from `AppProperties.Redis`. Spring Boot auto-configures `StringRedisTemplate` from it.
+Creates a `RedisConnectionFactory` from `AppProperties.Redis`. Spring Boot auto-configures `StringRedisTemplate` from it. Guard with `@ConditionalOnProperty` so no Redis beans are created in cookie mode.
 
 ```java
 @Configuration
+@ConditionalOnProperty(name = "app.token-cache.type", havingValue = "redis", matchIfMissing = true)
 public class RedisConfig {
     private final AppProperties appProperties;
     public RedisConfig(AppProperties appProperties) { this.appProperties = appProperties; }
@@ -242,8 +311,30 @@ public class RedisConfig {
             : LettuceClientConfiguration.defaultConfiguration();
         return new LettuceConnectionFactory(serverConfig, clientConfig);
     }
+
+    @Bean
+    public TokenCacheEncryption tokenCacheEncryption() {
+        return new TokenCacheEncryption(appProperties.getRedis().getEncryptionKey());
+    }
 }
 ```
+
+---
+
+#### `config/TokenCacheConfig.java`
+
+Selects the active `MsalTokenCacheService` implementation based on `app.token-cache.type`. Both beans carry their own `@ConditionalOnProperty`, so only one is ever instantiated.
+
+```java
+@Configuration
+public class TokenCacheConfig {
+    // No @Bean factory method needed here when both implementations
+    // carry @ConditionalOnProperty themselves — Spring picks the right one.
+    // Add a @Bean method only if you prefer explicit wiring over annotation scanning.
+}
+```
+
+In practice, the selection is entirely handled by `@ConditionalOnProperty` on `RedisMsalTokenCache` and `CookieMsalTokenCache` (see below). `TokenCacheConfig` exists as an extension point and to make the intent explicit.
 
 ---
 
@@ -316,9 +407,13 @@ public class SecurityConfig {
 
 #### `service/TokenCacheEncryption.java`
 
-AES-256-GCM encryption/decryption for the MSAL token cache stored in Redis.  
-Key is injected from `${app.redis.encryption-key}` (base64-encoded 32-byte value).  
-If no key is configured, encryption is disabled (suitable for local dev only — logs a `WARN`).
+AES-256-GCM encryption/decryption for the MSAL token cache.
+Key is passed in as a constructor argument (base64-encoded 32-byte value).
+
+- **Redis mode**: instantiated as a `@Bean` by `RedisConfig` using `app.redis.encryption-key`. If no key is configured, encryption is disabled (suitable for local dev only — logs a `WARN`).
+- **Cookie mode**: instantiated directly by `CookieMsalTokenCache` using `app.token-cache.cookie.encryption-key`. A missing key causes a startup `IllegalArgumentException`.
+
+Do **not** annotate this class with `@Service` or `@Value` — it is a plain utility and is instantiated explicitly to support both key sources.
 
 Important implementation details:
 - Each call to `encrypt()` generates a fresh 12-byte random IV.
@@ -328,29 +423,38 @@ Important implementation details:
 
 ---
 
-#### `service/RedisMsalTokenCache.java`
+#### `service/MsalTokenCacheService.java`
 
-Implements `ITokenCacheAccessAspect` (MSAL4J interface). MSAL4J calls:
-- `beforeCacheAccess(ctx)` — load the per-user cache from Redis and call `ctx.tokenCache().deserialize(json)`.
-- `afterCacheAccess(ctx)` — if `ctx.hasCacheChanged()`, serialize and write back to Redis.
+Common interface implemented by both cache backends. Extend `ITokenCacheAccessAspect` (MSAL4J) and add the `evict` method so `AuthController` can invalidate a specific user's cache on logout without knowing the concrete implementation.
 
-**Redis key schema**: `msal:token-cache:{homeAccountId}` where `homeAccountId = oid.tid`.  
-For app-level (no user account) keys: `msal:token-cache:app:{clientId}`.
+```java
+public interface MsalTokenCacheService extends ITokenCacheAccessAspect {
+    /**
+     * Removes the cached tokens for the given user on logout.
+     * @param homeAccountId MSAL account identifier in the form {@code oid.tid}
+     */
+    void evict(String homeAccountId);
+}
+```
 
-Key implementation points:
-- Read/write failures are caught and logged as `WARN`; they never throw — MSAL falls back to an empty cache.
-- TTL is set on every write to `app.redis.ttl` (default 90 days, matching Azure AD refresh token lifetime).
-- `evict(homeAccountId)` deletes the Redis key on logout.
+Both `RedisMsalTokenCache` and `CookieMsalTokenCache` implement this interface. `AuthController` and `TokenExchangeService` depend only on `MsalTokenCacheService`.
+
+---
+
+#### `service/RedisMsalTokenCache.java` **[Redis only]**
+
+Implements `MsalTokenCacheService`. Guard with `@ConditionalOnProperty` so it is only created in Redis mode.
 
 ```java
 @Component
-public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
+@ConditionalOnProperty(name = "app.token-cache.type", havingValue = "redis", matchIfMissing = true)
+public class RedisMsalTokenCache implements MsalTokenCacheService {
     private static final String KEY_PREFIX = "msal:token-cache:";
     // inject: StringRedisTemplate, TokenCacheEncryption, AppProperties
 
     @Override
     public void beforeCacheAccess(ITokenCacheAccessContext ctx) {
-        String key = KEY_PREFIX + partitionKey(ctx);
+        String key = redisKey(ctx);
         try {
             String stored = redisTemplate.opsForValue().get(key);
             if (stored == null) return;
@@ -362,7 +466,7 @@ public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
     @Override
     public void afterCacheAccess(ITokenCacheAccessContext ctx) {
         if (!ctx.hasCacheChanged()) return;
-        String key = KEY_PREFIX + partitionKey(ctx);
+        String key = redisKey(ctx);
         try {
             String json = ctx.tokenCache().serialize();
             String toStore = encryption.isEnabled() ? encryption.encrypt(json) : json;
@@ -370,27 +474,166 @@ public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
         } catch (Exception e) { /* log WARN */ }
     }
 
+    @Override
     public void evict(String homeAccountId) {
-        redisTemplate.delete(KEY_PREFIX + homeAccountId);
+        try {
+            redisTemplate.delete(KEY_PREFIX + homeAccountId);
+        } catch (Exception e) { /* log WARN */ }
     }
 
-    private String partitionKey(ITokenCacheAccessContext ctx) {
+    private String redisKey(ITokenCacheAccessContext ctx) {
         IAccount account = ctx.account();
-        return account != null ? account.homeAccountId() : "app:" + ctx.clientId();
+        return KEY_PREFIX + (account != null ? account.homeAccountId() : "app:" + ctx.clientId());
     }
 }
 ```
 
 ---
 
+#### `service/CookieMsalTokenCache.java` **[Cookie only]**
+
+Implements `MsalTokenCacheService`. Guard with `@ConditionalOnProperty`. Requires `RequestContextHolder` to be populated (i.e., called from an HTTP request thread). Ensure the MSAL client is built with a caller-runs executor (see `TokenExchangeService` below) so MSAL cache callbacks run on the HTTP request thread.
+
+```java
+@Component
+@ConditionalOnProperty(name = "app.token-cache.type", havingValue = "cookie")
+public class CookieMsalTokenCache implements MsalTokenCacheService {
+
+    static final int MAX_COOKIE_VALUE_BYTES = 4090;
+
+    /**
+     * Only these sections are persisted to the cookie.
+     * AccessToken / IdToken / AppMetadata are stripped to stay within the 4 KB limit.
+     */
+    private static final List<String> PERSISTED_CACHE_SECTIONS = List.of("RefreshToken", "Account");
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    private final AuthCookieService authCookieService;
+    private final TokenCacheEncryption encryption;
+
+    public CookieMsalTokenCache(AppProperties appProperties, AuthCookieService authCookieService) {
+        String key = appProperties.getTokenCache().getCookie().getEncryptionKey();
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException(
+                "app.token-cache.cookie.encryption-key must be set when app.token-cache.type=cookie. "
+                + "Generate: openssl rand -base64 32");
+        }
+        this.encryption = new TokenCacheEncryption(key);
+        this.authCookieService = authCookieService;
+    }
+
+    @Override
+    public void beforeCacheAccess(ITokenCacheAccessContext context) {
+        try {
+            ServletRequestAttributes attrs = currentRequestAttributes();
+            String cookieValue = authCookieService.getMsalCacheCookie(attrs.getRequest()).orElse(null);
+            if (cookieValue == null || cookieValue.isBlank()) return;
+            String cacheJson = decodeAndDecompress(encryption.decrypt(cookieValue));
+            context.tokenCache().deserialize(cacheJson);
+        } catch (Exception e) {
+            logger.warn("Failed to load MSAL token cache from cookie; proceeding with empty cache: {}",
+                e.getMessage());
+        }
+    }
+
+    @Override
+    public void afterCacheAccess(ITokenCacheAccessContext context) {
+        if (!context.hasCacheChanged()) return;
+        try {
+            String slimJson = retainPersistedSections(context.tokenCache().serialize());
+            String cookieValue = encryption.encrypt(compressAndEncode(slimJson));
+            if (cookieValue.getBytes(StandardCharsets.UTF_8).length > MAX_COOKIE_VALUE_BYTES) {
+                logger.error("MSAL token cache cookie would exceed {} bytes; skipping write. "
+                    + "Consider switching to Redis.", MAX_COOKIE_VALUE_BYTES);
+                return;
+            }
+            HttpServletResponse response = currentRequestAttributes().getResponse();
+            if (response != null) authCookieService.setMsalCacheCookie(response, cookieValue);
+        } catch (Exception e) {
+            logger.warn("Failed to persist MSAL token cache to cookie: {}", e.getMessage());
+        }
+    }
+
+    @Override
+    public void evict(String homeAccountId) {
+        try {
+            HttpServletResponse response = currentRequestAttributes().getResponse();
+            if (response != null) authCookieService.clearMsalCacheCookie(response);
+        } catch (Exception e) {
+            logger.error("Failed to evict MSAL token cache cookie: {}", e.getMessage());
+        }
+    }
+
+    /** Keeps only RefreshToken + Account sections; strips AccessToken, IdToken, AppMetadata. */
+    static String retainPersistedSections(String json) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(json);
+        ObjectNode slim = OBJECT_MAPPER.createObjectNode();
+        for (String section : PERSISTED_CACHE_SECTIONS) {
+            if (root.has(section)) slim.set(section, root.get(section));
+        }
+        return OBJECT_MAPPER.writeValueAsString(slim);
+    }
+
+    private static String compressAndEncode(String text) throws IOException { /* GZIP + Base64 */ }
+    private static String decodeAndDecompress(String encoded) throws IOException { /* Base64 + GUNZIP */ }
+    private static ServletRequestAttributes currentRequestAttributes() {
+        return (ServletRequestAttributes) RequestContextHolder.currentRequestAttributes();
+    }
+}
+```
+
+**`AuthCookieService` additions** — add these three methods to `AuthCookieService` to handle the MSAL cache cookie:
+
+```java
+/** Writes the encrypted MSAL cache as an HttpOnly cookie. */
+public void setMsalCacheCookie(HttpServletResponse response, String encryptedValue) { ... }
+
+/** Clears the MSAL cache cookie (Max-Age=0). */
+public void clearMsalCacheCookie(HttpServletResponse response) { ... }
+
+/** Returns the MSAL cache cookie value, or empty if absent. */
+public Optional<String> getMsalCacheCookie(HttpServletRequest request) { ... }
+```
+
+Cookie attributes: `HttpOnly`, `SameSite=Strict`, `Secure` from `app.token-cache.cookie.secure`, `Max-Age` from `app.token-cache.cookie.max-age`.
+
+---
+
 #### `service/TokenExchangeService.java`
 
-Wraps `ConfidentialClientApplication` (MSAL4J singleton). Initialized with `@PostConstruct`.
+Wraps `ConfidentialClientApplication` (MSAL4J singleton). Initialized with `@PostConstruct`. Inject `MsalTokenCacheService` (not the concrete implementation).
 
-Provides three methods:
+**Critical: caller-runs executor.** MSAL4J's cache callbacks (`beforeCacheAccess` / `afterCacheAccess`) run on MSAL's internal executor threads by default. `CookieMsalTokenCache` reads/writes HTTP cookies via `RequestContextHolder`, which uses thread-locals. Unless the callbacks run on the HTTP request thread, `RequestContextHolder.currentRequestAttributes()` throws `IllegalStateException: No thread-bound request found`.
+
+Fix: pass a caller-runs `ExecutorService` to the MSAL builder so all MSAL tasks run synchronously on the calling (HTTP request) thread. Since all callers already block with `.get(timeout)`, there is no change in effective concurrency.
+
+```java
+private static final ExecutorService CALLER_RUNS_EXECUTOR =
+    new AbstractExecutorService() {
+        public void execute(Runnable command) { command.run(); }
+        public void shutdown() {}
+        public List<Runnable> shutdownNow() { return Collections.emptyList(); }
+        public boolean isShutdown()  { return false; }
+        public boolean isTerminated() { return false; }
+        public boolean awaitTermination(long t, TimeUnit u) { return true; }
+    };
+
+@PostConstruct
+public void init() throws Exception {
+    IClientCredential credential = ClientCredentialFactory.createFromSecret(clientSecret);
+    msalClient = ConfidentialClientApplication.builder(clientId, credential)
+        .authority(authority)
+        .setTokenCacheAccessAspect(tokenCache)
+        .executorService(CALLER_RUNS_EXECUTOR)   // ← required for cookie cache
+        .build();
+}
+```
+
+Provides four methods:
 1. **`generateAuthorizationUrl(redirectUri, scopes, state, codeChallenge)`** — builds the Azure AD authorization URL with PKCE S256 and `prompt=select_account`.
 2. **`exchangeAuthorizationCode(code, redirectUri, scopes, codeVerifier)`** — exchanges the authorization code for tokens; returns `IAuthenticationResult`.
-3. **`acquireTokenSilently(homeAccountId, scopes)`** — looks up the MSAL account by `homeAccountId` in the loaded cache and calls `acquireTokenSilently`. Returns `Optional.empty()` on any failure (expired/revoked, Redis miss, timeout).
+3. **`acquireTokenSilently(homeAccountId, scopes)`** — looks up the MSAL account by `homeAccountId` in the loaded cache and calls `acquireTokenSilently`. Returns `Optional.empty()` on any failure (expired/revoked, cache miss, timeout).
+4. **`acquireTokenSilentlyFromCache(scopes)`** *(new)* — calls `msalClient.getAccounts()` (which triggers `beforeCacheAccess` to load the persistent cache), picks the first cached account, then calls `acquireTokenSilently` with that account. Used for the **session restore path** (AUTH_TOKEN absent, MSAL cache present). Returns `Optional.empty()` if no accounts are cached or the refresh token has expired.
 
 All blocking MSAL calls use `.get(30, TimeUnit.SECONDS)` to prevent thread exhaustion.
 
@@ -440,12 +683,63 @@ clearOAuthFlowCookies(response)
 Extends `OncePerRequestFilter`. Skips `/auth/**` paths entirely.
 
 **Token refresh strategy** (per request):
-1. Extract `AUTH_TOKEN` cookie.
-2. If valid and **not expiring within 300 s** → authenticate from current token.
-3. If valid but **expiring within 300 s** → authenticate from current token AND trigger silent refresh in the background, updating the cookie on success.
-4. If invalid/expired → attempt silent refresh first; if successful, authenticate from new token; otherwise proceed unauthenticated (Spring returns 401).
 
-Silent refresh reads `oid` and `tid` from the (possibly expired) token and calls `tokenExchangeService.acquireTokenSilently(oid + "." + tid, scopes)`.
+1. **AUTH_TOKEN present and valid, not expiring within 300 s** → authenticate from current token, no refresh.
+2. **AUTH_TOKEN present and valid, expiring within 300 s** → authenticate from current token AND trigger `tryRefreshToken()` (proactive refresh). The `homeAccountId` is derived from `oid` + `tid` claims in the current JWT.
+3. **AUTH_TOKEN present but invalid/tampered** → do **not** attempt refresh; proceed unauthenticated (Spring returns 401).
+4. **AUTH_TOKEN absent, MSAL cache cookie present** → call `tryRefreshTokenFromMsalCache()` which calls `tokenExchangeService.acquireTokenSilentlyFromCache()`. On success, set `AUTH_TOKEN` cookie and authenticate. This path is primarily for **cookie cache mode**: the `MSAL_TOKEN_CACHE` cookie outlives the shorter-lived `AUTH_TOKEN` cookie.
+5. **AUTH_TOKEN absent, no MSAL cache** → proceed unauthenticated.
+
+```java
+@Override
+protected void doFilterInternal(HttpServletRequest request,
+                                HttpServletResponse response,
+                                FilterChain filterChain) throws ServletException, IOException {
+    if (request.getServletPath().startsWith("/auth/")) {
+        filterChain.doFilter(request, response);
+        return;
+    }
+
+    String token = extractTokenFromCookie(request);
+
+    if (token != null) {
+        if (tokenValidationService.validateToken(token)) {
+            Jwt jwt = tokenValidationService.parseToken(token);
+            setAuthentication(jwt);
+
+            if (isExpiringSoon(jwt)) {
+                tryRefreshToken(token, response);  // proactive refresh only
+            }
+        }
+        // Invalid/tampered token: no refresh attempt
+    } else {
+        // No AUTH_TOKEN — attempt session restore from MSAL cache
+        tryRefreshTokenFromMsalCache(request, response);
+    }
+
+    filterChain.doFilter(request, response);
+}
+
+private void tryRefreshToken(String token, HttpServletResponse response) {
+    String homeAccountId = extractHomeAccountId(token);  // reads oid+tid from JWT claims
+    if (homeAccountId == null) return;
+    tokenExchangeService.acquireTokenSilently(homeAccountId, scopes).ifPresent(result -> {
+        Jwt jwt = tokenValidationService.parseToken(result.idToken());
+        setAuthentication(jwt);
+        authCookieService.setAuthCookie(response, result.idToken());
+    });
+}
+
+private void tryRefreshTokenFromMsalCache(HttpServletRequest request,
+                                          HttpServletResponse response) {
+    if (authCookieService.getMsalCacheCookie(request).isEmpty()) return;
+    tokenExchangeService.acquireTokenSilentlyFromCache(scopes).ifPresent(result -> {
+        Jwt jwt = tokenValidationService.parseToken(result.idToken());
+        setAuthentication(jwt);
+        authCookieService.setAuthCookie(response, result.idToken());
+    });
+}
+```
 
 Roles are mapped from the `roles` claim as `ROLE_{ROLE_NAME_UPPERCASE}` `GrantedAuthority` entries.
 
@@ -471,7 +765,7 @@ Handles the OAuth 2.0 PKCE login flow. Annotate with `@RequestMapping("/auth")`.
 7. Redirect to `{frontendUrl}/?login=success`.
 
 **`POST /auth/logout`**:
-1. Parse `oid` + `tid` from `AUTH_TOKEN` cookie → call `redisMsalTokenCache.evict(oid + "." + tid)`.
+1. Parse `oid` + `tid` from `AUTH_TOKEN` cookie → call `msalTokenCacheService.evict(oid + "." + tid)` (works for both Redis and Cookie cache).
 2. Call `authCookieService.clearAuthCookie(response)`.
 
 **`frontendUrl()` helper**: returns `appProperties.getCors().getAllowedOrigins()[0]`.
@@ -691,24 +985,27 @@ With this setup, browser requests to `https://myapp.example.com/api/auth/login` 
 
 ## Environment Variable Reference
 
-| Variable | Description | Example |
-|---|---|---|
-| `AZURE_CLIENT_ID` | App registration client ID | `a69071ff-...` |
-| `AZURE_TENANT_ID` | Azure AD directory tenant ID | `64458159-...` |
-| `AZURE_CLIENT_SECRET` | Client secret from app registration | `2bB8Q~...` |
-| `FRONTEND_URL` | Full origin of the frontend | `http://localhost:3000` |
-| `BACKEND_PORT` | Backend listen port | `8080` |
-| `BACKEND_CONTEXT_PATH` | Spring context path prefix | `/api` |
-| `COOKIE_NAME` | Name of the auth cookie | `AUTH_TOKEN` |
-| `COOKIE_MAX_AGE` | Cookie lifetime in seconds | `3600` |
-| `COOKIE_SECURE` | Require HTTPS (`false` for local dev) | `true` |
-| `COOKIE_SAME_SITE` | SameSite policy (`Strict` / `Lax`) | `Strict` |
-| `REDIS_HOST` | Redis hostname | `localhost` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `REDIS_PASSWORD` | Redis password | `changeme-in-dev` |
-| `REDIS_TTL` | MSAL cache TTL (Spring Duration) | `90d` |
-| `REDIS_TLS` | Enable TLS for Redis | `false` |
-| `REDIS_ENCRYPTION_KEY` | AES-256-GCM key (base64, 32 bytes) | `openssl rand -base64 32` |
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `AZURE_CLIENT_ID` | App registration client ID | `a69071ff-...` | Always |
+| `AZURE_TENANT_ID` | Azure AD directory tenant ID | `64458159-...` | Always |
+| `AZURE_CLIENT_SECRET` | Client secret from app registration | `2bB8Q~...` | Always |
+| `FRONTEND_URL` | Full origin of the frontend | `http://localhost:3000` | Always |
+| `BACKEND_PORT` | Backend listen port | `8080` | Always |
+| `BACKEND_CONTEXT_PATH` | Spring context path prefix | `/api` | Always |
+| `COOKIE_NAME` | Name of the auth cookie | `AUTH_TOKEN` | Always |
+| `COOKIE_MAX_AGE` | Cookie lifetime in seconds | `3600` | Always |
+| `COOKIE_SECURE` | Require HTTPS (`false` for local dev) | `true` | Always |
+| `COOKIE_SAME_SITE` | SameSite policy (`Strict` / `Lax`) | `Strict` | Always |
+| `TOKEN_CACHE_TYPE` | Cache backend: `redis` or `cookie` | `redis` | Always |
+| `REDIS_HOST` | Redis hostname | `localhost` | Redis only |
+| `REDIS_PORT` | Redis port | `6379` | Redis only |
+| `REDIS_PASSWORD` | Redis password | `changeme-in-dev` | Redis only |
+| `REDIS_TTL` | MSAL cache TTL (Spring Duration) | `90d` | Redis only |
+| `REDIS_TLS` | Enable TLS for Redis | `false` | Redis only |
+| `REDIS_ENCRYPTION_KEY` | AES-256-GCM key (base64, 32 bytes) | `openssl rand -base64 32` | Redis only |
+| `TOKEN_CACHE_COOKIE_ENCRYPTION_KEY` | AES-256-GCM key for cookie cache | `openssl rand -base64 32` | Cookie only |
+| `TOKEN_CACHE_COOKIE_SECURE` | `Secure` flag on MSAL cache cookie | `true` | Cookie only |
 
 ---
 
@@ -728,18 +1025,26 @@ With this setup, browser requests to `https://myapp.example.com/api/auth/login` 
    → Backend validates state cookie (CSRF check)
    → Backend exchanges code + verifier for tokens via MSAL4J
    → ID token stored in AUTH_TOKEN cookie (HttpOnly, Secure, SameSite=Strict)
-   → Refresh token stored in Redis (encrypted) — never sent to browser
+   → [Redis]  Refresh token stored encrypted in Redis — never sent to browser
+   → [Cookie] Refresh token stored encrypted in MSAL_TOKEN_CACHE cookie — HttpOnly
    → Browser redirected to /?login=success
 
 4. Subsequent API calls (e.g., GET /api/hello)
-   → Browser auto-sends AUTH_TOKEN cookie
+   → Browser auto-sends AUTH_TOKEN cookie (+ MSAL_TOKEN_CACHE in cookie mode)
    → CookieAuthenticationFilter validates JWT, sets SecurityContext
-   → If token expiring soon: silent refresh via Redis-cached refresh token
-   → If token expired: silent refresh attempt; 401 if refresh token revoked
+   → If token expiring within 5 min: proactive silent refresh via cached refresh token
+   → If token invalid/tampered: no refresh; request proceeds unauthenticated (401)
 
-5. POST /api/auth/logout
-   → Redis cache entry evicted (refresh token invalidated)
-   → AUTH_TOKEN cookie cleared (maxAge=0)
+5. Session restore (AUTH_TOKEN absent, MSAL_TOKEN_CACHE present) — [Cookie only]
+   → AUTH_TOKEN cookie MaxAge has elapsed; browser no longer sends it
+   → CookieAuthenticationFilter detects MSAL_TOKEN_CACHE cookie is present
+   → Calls acquireTokenSilentlyFromCache() → discovers cached account via getAccounts()
+   → Exchanges refresh token → issues fresh AUTH_TOKEN → request authenticated
+
+6. POST /api/auth/logout
+   → [Redis]  Redis cache entry evicted (refresh token invalidated immediately)
+   → [Cookie] MSAL_TOKEN_CACHE cookie cleared (Max-Age=0)
+   → AUTH_TOKEN cookie cleared (Max-Age=0)
 ```
 
 ---
@@ -748,13 +1053,23 @@ With this setup, browser requests to `https://myapp.example.com/api/auth/login` 
 
 Before deploying to production:
 
+**Both backends:**
 - [ ] `app.cookie.secure=true`
 - [ ] `app.cookie.same-site=Strict` (or `Lax` with documented justification)
-- [ ] `REDIS_ENCRYPTION_KEY` set to a unique 32-byte base64 key (`openssl rand -base64 32`)
-- [ ] `REDIS_PASSWORD` set to a strong password
-- [ ] `REDIS_TLS=true` for Azure Cache for Redis
 - [ ] `app.cors.allowed-origins` lists only known frontend origins (no wildcards)
 - [ ] `AZURE_CLIENT_SECRET` is rotated and stored in a secret manager (Key Vault, etc.)
 - [ ] Backend logs do not contain raw `homeAccountId` values (use `LogSanitizer.obfuscate()`)
 - [ ] `logging.level.com.example=INFO` (not `DEBUG`) in production
 - [ ] Azure AD redirect URI list contains only production URIs (remove `localhost`)
+
+**[Redis only]:**
+- [ ] `REDIS_ENCRYPTION_KEY` set to a unique 32-byte base64 key (`openssl rand -base64 32`)
+- [ ] `REDIS_PASSWORD` set to a strong password
+- [ ] `REDIS_TLS=true` for Azure Cache for Redis
+
+**[Cookie only]:**
+- [ ] `TOKEN_CACHE_COOKIE_ENCRYPTION_KEY` set to a unique 32-byte base64 key (`openssl rand -base64 32`)
+- [ ] `app.token-cache.cookie.secure=true` in all non-local environments
+- [ ] `AUTH_TOKEN` cookie `MaxAge` is intentionally shorter than the MSAL cache cookie `MaxAge` so the session-restore path can recover without re-login
+- [ ] Understand that key rotation (`TOKEN_CACHE_COOKIE_ENCRYPTION_KEY` change) silently invalidates all active cookie caches — users must re-authenticate once (graceful degradation, no 500 error)
+- [ ] Understand that cookie cache is **not cluster-safe** — each user's cache is bound to their browser, not a shared store
