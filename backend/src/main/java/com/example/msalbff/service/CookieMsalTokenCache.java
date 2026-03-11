@@ -73,7 +73,7 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
 
     public CookieMsalTokenCache(AppProperties appProperties,
                                 AuthCookieService authCookieService) {
-        String key = appProperties.getTokenCache().getCookieEncryptionKey();
+        String key = appProperties.getTokenCache().getCookie().getEncryptionKey();
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException(
                     "app.token-cache.cookie.encryption-key must be set when app.token-cache.type=cookie. "

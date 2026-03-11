@@ -137,6 +137,11 @@ app.cookie.same-site=${COOKIE_SAME_SITE:-Lax}
 # CORS Configuration
 app.cors.allowed-origins=${FRONTEND_URL:-http://localhost:3000}
 
+# MSAL Token Cache
+app.token-cache.type=${TOKEN_CACHE_TYPE:-redis}
+app.token-cache.cookie.encryption-key=${TOKEN_CACHE_COOKIE_ENCRYPTION_KEY:-}
+app.token-cache.cookie.secure=${TOKEN_CACHE_COOKIE_SECURE:-false}
+
 # Redis — distributed MSAL token cache
 app.redis.host=${REDIS_HOST:-localhost}
 app.redis.port=${REDIS_PORT:-6379}

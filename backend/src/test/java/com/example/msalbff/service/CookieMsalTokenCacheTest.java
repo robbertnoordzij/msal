@@ -311,9 +311,9 @@ class CookieMsalTokenCacheTest {
         AppProperties props = new AppProperties();
         props.getCookie().setSecure(false);
         props.getCookie().setSameSite("Strict");
-        props.getTokenCache().setCookieName("MSAL_TOKEN_CACHE");
-        props.getTokenCache().setCookieMaxAge(java.time.Duration.ofDays(90));
-        props.getTokenCache().setCookieEncryptionKey(encryptionKey);
+        props.getTokenCache().getCookie().setName("MSAL_TOKEN_CACHE");
+        props.getTokenCache().getCookie().setMaxAge(java.time.Duration.ofDays(90));
+        props.getTokenCache().getCookie().setEncryptionKey(encryptionKey);
         return props;
     }
 }

@@ -26,9 +26,9 @@ class AuthCookieServiceTest {
         props.getCookie().setSecure(false);
         props.getCookie().setSameSite("Strict");
         props.getCookie().setHttpOnly(true);
-        props.getTokenCache().setCookieName("MSAL_TOKEN_CACHE");
-        props.getTokenCache().setCookieMaxAge(Duration.ofDays(90));
-        props.getTokenCache().setCookieSecure(false);
+        props.getTokenCache().getCookie().setName("MSAL_TOKEN_CACHE");
+        props.getTokenCache().getCookie().setMaxAge(Duration.ofDays(90));
+        props.getTokenCache().getCookie().setSecure(false);
         authCookieService = new AuthCookieService(props);
     }
 

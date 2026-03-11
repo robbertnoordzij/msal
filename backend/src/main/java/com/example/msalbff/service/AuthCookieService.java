@@ -98,7 +98,7 @@ public class AuthCookieService {
      */
     public void setMsalCacheCookie(HttpServletResponse response, String encryptedValue) {
         response.addHeader(HttpHeaders.SET_COOKIE,
-                buildMsalCacheCookie(encryptedValue, appProperties.getTokenCache().getCookieMaxAge().getSeconds()).toString());
+                buildMsalCacheCookie(encryptedValue, appProperties.getTokenCache().getCookie().getMaxAge().getSeconds()).toString());
     }
 
     /** Expires the MSAL token-cache cookie, causing the browser to delete it. */
@@ -110,7 +110,7 @@ public class AuthCookieService {
      * Returns the raw (encrypted) value of the MSAL token-cache cookie, or empty if absent.
      */
     public Optional<String> getMsalCacheCookie(HttpServletRequest request) {
-        return findCookieValue(request, appProperties.getTokenCache().getCookieName());
+        return findCookieValue(request, appProperties.getTokenCache().getCookie().getName());
     }
 
     private ResponseCookie buildAuthCookie(String value, long maxAge) {
@@ -125,11 +125,11 @@ public class AuthCookieService {
     }
 
     private ResponseCookie buildMsalCacheCookie(String value, long maxAge) {
-        AppProperties.TokenCache tokenCache = appProperties.getTokenCache();
-        return ResponseCookie.from(tokenCache.getCookieName(), value)
+        AppProperties.TokenCache.CookieStore cookieStore = appProperties.getTokenCache().getCookie();
+        return ResponseCookie.from(cookieStore.getName(), value)
                 .httpOnly(true)
-                // cookieSecure defaults to true; only set false for local HTTP dev
-                .secure(tokenCache.isCookieSecure())
+                // secure defaults to true; only set false for local HTTP dev
+                .secure(cookieStore.isSecure())
                 .path("/")
                 .maxAge(maxAge)
                 .sameSite("Strict") // SameSite=Strict is required: the MSAL cache cookie is never needed cross-site

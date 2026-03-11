@@ -180,7 +180,7 @@ public class AppProperties {
      *
      * <p><strong>Cookie mode notes:</strong>
      * <ul>
-     *   <li>{@code cookieEncryptionKey} is mandatory — startup fails if blank.</li>
+     *   <li>{@code cookie.encryption-key} is mandatory when {@code type=cookie} — startup fails if blank.</li>
      *   <li>Rotating the key invalidates all existing cache cookies; users must re-authenticate.</li>
      *   <li>Clustering is not supported: each browser carries its own token cache.</li>
      *   <li>For extra browser enforcement in production, prefix the cookie name with
@@ -191,35 +191,45 @@ public class AppProperties {
     public static class TokenCache {
         /** {@code redis} (default) or {@code cookie}. */
         private String type = "redis";
-        /**
-         * Base64-encoded 256-bit AES key for the cookie cache.
-         * Required when {@code type=cookie}. Generate with: {@code openssl rand -base64 32}
-         */
-        private String cookieEncryptionKey;
-        /** Name of the HTTP-only cookie that stores the encrypted MSAL token cache. */
-        private String cookieName = "MSAL_TOKEN_CACHE";
-        /** Lifetime of the cache cookie; should match Azure AD's refresh-token lifetime. */
-        private Duration cookieMaxAge = Duration.ofDays(90);
-        /**
-         * Whether the MSAL cache cookie should have the {@code Secure} flag.
-         * Defaults to {@code true}. Only set to {@code false} for local HTTP development —
-         * never in production, as the cookie contains an encrypted refresh token.
-         */
-        private boolean cookieSecure = true;
+        private final CookieStore cookie = new CookieStore();
 
         public String getType() { return type; }
         public void setType(String type) { this.type = type; }
 
-        public String getCookieEncryptionKey() { return cookieEncryptionKey; }
-        public void setCookieEncryptionKey(String cookieEncryptionKey) { this.cookieEncryptionKey = cookieEncryptionKey; }
+        public CookieStore getCookie() { return cookie; }
 
-        public String getCookieName() { return cookieName; }
-        public void setCookieName(String cookieName) { this.cookieName = cookieName; }
+        /**
+         * Cookie storage settings for the MSAL token cache.
+         * Bound from {@code app.token-cache.cookie.*}.
+         */
+        public static class CookieStore {
+            /**
+             * Base64-encoded 256-bit AES key. Required when {@code type=cookie}.
+             * Generate with: {@code openssl rand -base64 32}
+             */
+            private String encryptionKey;
+            /** Name of the HTTP-only cookie that stores the encrypted MSAL token cache. */
+            private String name = "MSAL_TOKEN_CACHE";
+            /** Lifetime of the cache cookie; should match Azure AD's refresh-token lifetime. */
+            private Duration maxAge = Duration.ofDays(90);
+            /**
+             * Whether the MSAL cache cookie should have the {@code Secure} flag.
+             * Defaults to {@code true}. Only set to {@code false} for local HTTP development —
+             * never in production, as the cookie contains an encrypted refresh token.
+             */
+            private boolean secure = true;
 
-        public Duration getCookieMaxAge() { return cookieMaxAge; }
-        public void setCookieMaxAge(Duration cookieMaxAge) { this.cookieMaxAge = cookieMaxAge; }
+            public String getEncryptionKey() { return encryptionKey; }
+            public void setEncryptionKey(String encryptionKey) { this.encryptionKey = encryptionKey; }
 
-        public boolean isCookieSecure() { return cookieSecure; }
-        public void setCookieSecure(boolean cookieSecure) { this.cookieSecure = cookieSecure; }
+            public String getName() { return name; }
+            public void setName(String name) { this.name = name; }
+
+            public Duration getMaxAge() { return maxAge; }
+            public void setMaxAge(Duration maxAge) { this.maxAge = maxAge; }
+
+            public boolean isSecure() { return secure; }
+            public void setSecure(boolean secure) { this.secure = secure; }
+        }
     }
 }
