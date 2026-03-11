@@ -11,6 +11,8 @@ A production-aligned example of Azure AD (Entra ID) authentication using the **B
 
 > **Goal:** Demonstrate a secure, stateless, production-ready auth pattern with the minimum moving parts needed to understand it and adapt it to your own codebase.
 
+> **Implementing this in your own project?** See [instructions.md](./instructions.md) — a step-by-step guide written for GitHub Copilot (or a human!) to port this pattern into an existing codebase, including the choice between Redis and Cookie token cache backends.
+
 ---
 
 ## Why Not localStorage?
