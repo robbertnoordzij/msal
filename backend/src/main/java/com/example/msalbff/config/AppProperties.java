@@ -3,9 +3,10 @@ package com.example.msalbff.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Component
 @ConfigurationProperties(prefix = "app")
@@ -15,6 +16,7 @@ public class AppProperties {
     private final Cookie cookie = new Cookie();
     private final Cors cors = new Cors();
     private final Redis redis = new Redis();
+    private final TokenCache tokenCache = new TokenCache();
 
     public AzureAd getAzureAd() {
         return azureAd;
@@ -30,6 +32,10 @@ public class AppProperties {
 
     public Redis getRedis() {
         return redis;
+    }
+
+    public TokenCache getTokenCache() {
+        return tokenCache;
     }
 
     public static class AzureAd {
@@ -64,7 +70,9 @@ public class AppProperties {
 
         /** Returns {@link #scopes} as a set, split on whitespace. */
         public Set<String> scopesAsSet() {
-            return new HashSet<>(Arrays.asList(scopes.split(" ")));
+            return Arrays.stream(scopes.trim().split("\\s+"))
+                    .filter(s -> !s.isBlank())
+                    .collect(Collectors.toSet());
         }
     }
 
@@ -136,9 +144,14 @@ public class AppProperties {
         /** Optional Redis password. Leave empty only for local development. */
         private String password;
         /** TTL for cached MSAL token data. Defaults to 90 days (Azure AD refresh token lifetime). */
-        private java.time.Duration ttl = java.time.Duration.ofDays(90);
+        private Duration ttl = Duration.ofDays(90);
         /** Enable TLS. Required for Azure Cache for Redis (port 6380). */
         private boolean tls = false;
+        /**
+         * Base64-encoded 256-bit AES key for encrypting token cache data at rest in Redis.
+         * Strongly recommended for non-local environments. Generate with: {@code openssl rand -base64 32}
+         */
+        private String encryptionKey;
 
         public String getHost() { return host; }
         public void setHost(String host) { this.host = host; }
@@ -149,10 +162,64 @@ public class AppProperties {
         public String getPassword() { return password; }
         public void setPassword(String password) { this.password = password; }
 
-        public java.time.Duration getTtl() { return ttl; }
-        public void setTtl(java.time.Duration ttl) { this.ttl = ttl; }
+        public Duration getTtl() { return ttl; }
+        public void setTtl(Duration ttl) { this.ttl = ttl; }
 
         public boolean isTls() { return tls; }
         public void setTls(boolean tls) { this.tls = tls; }
+
+        public String getEncryptionKey() { return encryptionKey; }
+        public void setEncryptionKey(String encryptionKey) { this.encryptionKey = encryptionKey; }
+    }
+
+    /**
+     * Selects the MSAL token cache backend and configures the cookie-based implementation.
+     *
+     * <p>Set {@code app.token-cache.type=redis} (default) for clustered deployments
+     * or {@code app.token-cache.type=cookie} for single-instance / infrastructure-free setups.
+     *
+     * <p><strong>Cookie mode notes:</strong>
+     * <ul>
+     *   <li>{@code cookieEncryptionKey} is mandatory — startup fails if blank.</li>
+     *   <li>Rotating the key invalidates all existing cache cookies; users must re-authenticate.</li>
+     *   <li>Clustering is not supported: each browser carries its own token cache.</li>
+     *   <li>For extra browser enforcement in production, prefix the cookie name with
+     *       {@code __Secure-} (e.g. {@code __Secure-MSAL_TOKEN_CACHE}); the {@code Secure}
+     *       attribute must then also be {@code true}.</li>
+     * </ul>
+     */
+    public static class TokenCache {
+        /** {@code redis} (default) or {@code cookie}. */
+        private String type = "redis";
+        /**
+         * Base64-encoded 256-bit AES key for the cookie cache.
+         * Required when {@code type=cookie}. Generate with: {@code openssl rand -base64 32}
+         */
+        private String cookieEncryptionKey;
+        /** Name of the HTTP-only cookie that stores the encrypted MSAL token cache. */
+        private String cookieName = "MSAL_TOKEN_CACHE";
+        /** Lifetime of the cache cookie; should match Azure AD's refresh-token lifetime. */
+        private Duration cookieMaxAge = Duration.ofDays(90);
+        /**
+         * Whether the MSAL cache cookie should have the {@code Secure} flag.
+         * Defaults to {@code true}. Only set to {@code false} for local HTTP development —
+         * never in production, as the cookie contains an encrypted refresh token.
+         */
+        private boolean cookieSecure = true;
+
+        public String getType() { return type; }
+        public void setType(String type) { this.type = type; }
+
+        public String getCookieEncryptionKey() { return cookieEncryptionKey; }
+        public void setCookieEncryptionKey(String cookieEncryptionKey) { this.cookieEncryptionKey = cookieEncryptionKey; }
+
+        public String getCookieName() { return cookieName; }
+        public void setCookieName(String cookieName) { this.cookieName = cookieName; }
+
+        public Duration getCookieMaxAge() { return cookieMaxAge; }
+        public void setCookieMaxAge(Duration cookieMaxAge) { this.cookieMaxAge = cookieMaxAge; }
+
+        public boolean isCookieSecure() { return cookieSecure; }
+        public void setCookieSecure(boolean cookieSecure) { this.cookieSecure = cookieSecure; }
     }
 }

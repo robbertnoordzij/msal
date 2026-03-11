@@ -2,8 +2,6 @@ package com.example.msalbff.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import javax.crypto.Cipher;
@@ -16,17 +14,24 @@ import java.util.Arrays;
 import java.util.Base64;
 
 /**
- * Encrypts and decrypts MSAL token cache data using AES-256-GCM before persistence to Redis.
+ * Encrypts and decrypts MSAL token cache data using AES-256-GCM.
  *
  * <p>Each ciphertext is prefixed with a fresh 12-byte IV, so encrypting the same plaintext
  * twice always produces different output. The 128-bit GCM authentication tag detects
  * any in-flight tampering of the ciphertext.
  *
- * <p>If {@code app.redis.encryption-key} is not set, encryption is disabled and a startup
- * warning is logged. <strong>Always set the key in non-local environments.</strong>
+ * <p>If the provided key is blank, encryption is disabled and a startup warning is logged.
+ * <strong>Always set the key in non-local environments.</strong>
  * Generate a key with: {@code openssl rand -base64 32}
+ *
+ * <p>This is a plain utility class — it is not Spring-managed. Callers are responsible
+ * for constructing an instance with the appropriate key:
+ * <ul>
+ *   <li>Redis cache: a {@code @Bean} in {@code RedisConfig} reads {@code app.redis.encryption-key}.</li>
+ *   <li>Cookie cache: {@link CookieMsalTokenCache} constructs an instance with
+ *       {@code app.token-cache.cookie.encryption-key}.</li>
+ * </ul>
  */
-@Service
 public class TokenCacheEncryption {
 
     private static final Logger logger = LoggerFactory.getLogger(TokenCacheEncryption.class);
@@ -38,7 +43,7 @@ public class TokenCacheEncryption {
     private final SecretKey secretKey;
     private final boolean enabled;
 
-    public TokenCacheEncryption(@Value("${app.redis.encryption-key:}") String base64Key) {
+    public TokenCacheEncryption(String base64Key) {
         if (!StringUtils.hasText(base64Key)) {
             this.secretKey = null;
             this.enabled = false;

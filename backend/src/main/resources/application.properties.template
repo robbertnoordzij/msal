@@ -43,6 +43,48 @@ app.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
 app.cors.allowed-headers=*
 app.cors.allow-credentials=true
 
+# Token cache backend
+# Set app.token-cache.type to choose the MSAL refresh-token cache implementation.
+#
+# "redis"  (DEFAULT) — persists the token cache in Redis, enabling silent token refresh
+#           across all server instances in a cluster. Requires a running Redis.
+#           Configure connection via app.redis.* properties.
+#
+# "cookie" — encrypts and stores the token cache in an HTTP-only browser cookie.
+#            No infrastructure required. Suitable for single-instance / dev setups.
+#            IMPORTANT: app.token-cache.cookie.encryption-key is MANDATORY in cookie mode.
+#            Without it the application will refuse to start.
+#
+# Tradeoffs:
+#   ┌──────────────┬────────────────────────────────┬────────────────────────────────┐
+#   │              │ redis                          │ cookie                         │
+#   ├──────────────┼────────────────────────────────┼────────────────────────────────┤
+#   │ Clustering   │ ✓ Supported                    │ ✗ Single-instance only         │
+#   │ Dependencies │ Redis                          │ None                           │
+#   │ Encryption   │ Optional (AES-256-GCM)         │ Required (AES-256-GCM)         │
+#   │ Key rotation │ Transparent                    │ Invalidates all sessions       │
+#   └──────────────┴────────────────────────────────┴────────────────────────────────┘
+#
+# For production cookie mode, consider using the __Secure- cookie name prefix:
+#   app.token-cache.cookie.name=__Secure-MSAL_TOKEN_CACHE
+#   app.cookie.secure=true  (required for __Secure- prefix enforcement)
+app.token-cache.type=redis
+
+# ── Redis settings (used when app.token-cache.type=redis) ────────────────────
+app.redis.host=localhost
+app.redis.port=6379
+app.redis.password=changeme-in-dev
+app.redis.ttl=90d
+app.redis.tls=false
+# Optional at rest encryption for the Redis cache. Generate: openssl rand -base64 32
+app.redis.encryption-key=
+
+# ── Cookie-cache settings (used when app.token-cache.type=cookie) ────────────
+# Mandatory: Base64-encoded 256-bit AES key.  Generate: openssl rand -base64 32
+# app.token-cache.cookie.encryption-key=
+# app.token-cache.cookie.name=MSAL_TOKEN_CACHE
+# app.token-cache.cookie.max-age=90d
+
 # Logging - VALUES FROM .env
 logging.level.com.example=DEBUG
 logging.level.org.springframework.security=DEBUG

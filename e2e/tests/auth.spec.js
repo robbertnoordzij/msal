@@ -135,3 +135,109 @@ test.describe('OAuth sign-in flow', () => {
     expect(authCookieAfterLogout).toBeUndefined();
   });
 });
+
+// ── Cookie-mode token cache tests ─────────────────────────────────────────────
+// These tests verify MSAL_TOKEN_CACHE cookie behaviour when the backend is
+// running with app.token-cache.type=cookie.
+//
+// Prerequisites:
+//   TOKEN_CACHE_TYPE=cookie  (must match the server's app.token-cache.type setting)
+//   AZURE_TEST_USER and AZURE_TEST_PASS must be set (full OAuth flow required)
+
+const TOKEN_CACHE_TYPE = process.env.TOKEN_CACHE_TYPE;
+const MSAL_CACHE_COOKIE = process.env.MSAL_CACHE_COOKIE_NAME || 'MSAL_TOKEN_CACHE';
+
+test.describe('Cookie-mode token cache', () => {
+  test.skip(
+    TOKEN_CACHE_TYPE !== 'cookie' || !AZURE_TEST_USER || !AZURE_TEST_PASS,
+    'Set TOKEN_CACHE_TYPE=cookie, AZURE_TEST_USER, and AZURE_TEST_PASS to run these tests'
+  );
+
+  /**
+   * Perform the full Azure AD login flow and return the authenticated page.
+   * Shared across the cookie-mode tests.
+   */
+  async function performLogin(page) {
+    await page.goto(FRONTEND);
+    await page.getByRole('button', { name: /Sign In with Azure AD/i }).click();
+    await page.waitForURL(`**/${MS_LOGIN_HOST}/**`);
+    await page.locator('input[type="email"]').fill(AZURE_TEST_USER);
+    await page.getByRole('button', { name: /Next/i }).click();
+    await page.locator('input[type="password"]').fill(AZURE_TEST_PASS);
+    await page.getByRole('button', { name: /Sign in/i }).click();
+    try {
+      await page.getByRole('button', { name: /No/i }).click({ timeout: 5_000 });
+    } catch (_) { /* optional prompt */ }
+    await page.waitForURL(`${FRONTEND}/**`, { timeout: 30_000 });
+    await expect(page.getByText(/Secure authentication established/i)).toBeVisible({ timeout: 10_000 });
+  }
+
+  test('MSAL_TOKEN_CACHE cookie is set and is HTTP-only after login', async ({ page }) => {
+    await performLogin(page);
+
+    const cookies = await page.context().cookies();
+    const msalCacheCookie = cookies.find(c => c.name === MSAL_CACHE_COOKIE);
+
+    expect(msalCacheCookie).toBeDefined();
+    expect(msalCacheCookie.httpOnly).toBe(true);
+    expect(msalCacheCookie.sameSite).toBe('Strict');
+    expect(msalCacheCookie.value).not.toBe('');
+  });
+
+  test('MSAL_TOKEN_CACHE cookie is not readable by JavaScript (HTTP-only enforcement)', async ({ page }) => {
+    await performLogin(page);
+
+    const jsVisible = await page.evaluate((cookieName) => {
+      return document.cookie.includes(cookieName);
+    }, MSAL_CACHE_COOKIE);
+
+    expect(jsVisible).toBe(false);
+  });
+
+  test('MSAL_TOKEN_CACHE cookie value is opaque (encrypted, not raw JSON)', async ({ page }) => {
+    await performLogin(page);
+
+    const cookies = await page.context().cookies();
+    const msalCacheCookie = cookies.find(c => c.name === MSAL_CACHE_COOKIE);
+
+    expect(msalCacheCookie).toBeDefined();
+    // Raw MSAL cache JSON always starts with '{'; the encrypted+compressed blob must not
+    expect(msalCacheCookie.value).not.toContain('{');
+    // Must not expose token type labels
+    expect(msalCacheCookie.value).not.toContain('RefreshToken');
+    expect(msalCacheCookie.value).not.toContain('AccessToken');
+  });
+
+  test('MSAL_TOKEN_CACHE cookie is cleared on logout', async ({ page }) => {
+    await performLogin(page);
+
+    // Verify it exists before logout
+    const cookiesBefore = await page.context().cookies();
+    expect(cookiesBefore.find(c => c.name === MSAL_CACHE_COOKIE)).toBeDefined();
+
+    // Log out
+    await page.getByRole('button', { name: /Sign Out/i }).click();
+
+    const cookiesAfter = await page.context().cookies();
+    const msalCookieAfter = cookiesAfter.find(c => c.name === MSAL_CACHE_COOKIE);
+    expect(msalCookieAfter).toBeUndefined();
+  });
+
+  test('Silent token refresh still works and updates MSAL_TOKEN_CACHE cookie', async ({ page }) => {
+    await performLogin(page);
+
+    const cookiesBefore = await page.context().cookies();
+    const msalCookieBefore = cookiesBefore.find(c => c.name === MSAL_CACHE_COOKIE);
+    expect(msalCookieBefore).toBeDefined();
+
+    // Trigger a protected API call which exercises the silent-refresh path
+    await page.getByRole('button', { name: /Call Hello Endpoint/i }).click();
+    await expect(page.getByText(/API Response/i)).toBeVisible({ timeout: 10_000 });
+
+    // The MSAL_TOKEN_CACHE cookie must still be present (and may have been refreshed)
+    const cookiesAfter = await page.context().cookies();
+    const msalCookieAfter = cookiesAfter.find(c => c.name === MSAL_CACHE_COOKIE);
+    expect(msalCookieAfter).toBeDefined();
+    expect(msalCookieAfter.httpOnly).toBe(true);
+  });
+});

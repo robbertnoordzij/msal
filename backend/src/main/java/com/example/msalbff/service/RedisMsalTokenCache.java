@@ -2,10 +2,10 @@ package com.example.msalbff.service;
 
 import com.example.msalbff.config.AppProperties;
 import com.microsoft.aad.msal4j.IAccount;
-import com.microsoft.aad.msal4j.ITokenCacheAccessAspect;
 import com.microsoft.aad.msal4j.ITokenCacheAccessContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -21,12 +21,16 @@ import java.time.Duration;
  * When {@link TokenCacheEncryption} is configured, the cache JSON is encrypted
  * with AES-256-GCM before storage, protecting refresh tokens at rest.
  *
+ * <p>Active when {@code app.token-cache.type=redis} (the default). To use the
+ * cookie-based cache instead, set {@code app.token-cache.type=cookie}.
+ *
  * <p>Both methods are fault-tolerant: a Redis outage is logged as a warning and
  * causes MSAL to fall back to an empty in-memory cache for the current request,
  * which may require the user to re-authenticate if the silent refresh fails.
  */
 @Component
-public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
+@ConditionalOnProperty(name = "app.token-cache.type", havingValue = "redis", matchIfMissing = true)
+public class RedisMsalTokenCache implements MsalTokenCacheService {
 
     private static final Logger logger = LoggerFactory.getLogger(RedisMsalTokenCache.class);
     private static final String KEY_PREFIX = "msal:token-cache:";
@@ -83,7 +87,7 @@ public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
      * Called on logout to immediately invalidate the refresh token cache.
      */
     public void evict(String homeAccountId) {
-        String redisKey = KEY_PREFIX + homeAccountId;
+        String redisKey = redisKey(homeAccountId);
         try {
             redisTemplate.delete(redisKey);
             logger.info("Evicted MSAL token cache from Redis for account '{}'",
@@ -97,5 +101,9 @@ public class RedisMsalTokenCache implements ITokenCacheAccessAspect {
     private String partitionKey(ITokenCacheAccessContext context) {
         IAccount account = context.account();
         return account != null ? account.homeAccountId() : APP_PARTITION_PREFIX + context.clientId();
+    }
+
+    private String redisKey(String homeAccountId) {
+        return KEY_PREFIX + homeAccountId;
     }
 }

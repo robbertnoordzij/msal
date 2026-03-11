@@ -24,7 +24,7 @@ class TokenExchangeServiceTest {
     private AppProperties appProperties;
 
     @Mock
-    private ITokenCacheAccessAspect tokenCache;
+    private MsalTokenCacheService tokenCache;
 
     @Mock
     private IConfidentialClientApplication msalClient;

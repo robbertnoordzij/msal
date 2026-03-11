@@ -246,4 +246,17 @@ class RedisMsalTokenCacheTest {
         when(context.account()).thenReturn(account);
         when(account.homeAccountId()).thenReturn(HOME_ACCOUNT_ID);
     }
+
+    // -----------------------------------------------------------------------
+    // MsalTokenCacheService interface compliance
+    // -----------------------------------------------------------------------
+
+    @Test
+    void implementsMsalTokenCacheService_allowsAssignmentToInterface() {
+        // This compile-time check confirms RedisMsalTokenCache satisfies
+        // the shared MsalTokenCacheService contract used by AuthController and
+        // TokenExchangeService.
+        MsalTokenCacheService service = cache;
+        org.junit.jupiter.api.Assertions.assertNotNull(service);
+    }
 }

@@ -6,8 +6,8 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-
 import java.net.URI;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -19,14 +19,13 @@ import java.util.concurrent.TimeoutException;
  * Handles OAuth 2.0 token acquisition via MSAL4J.
  *
  * <p>The {@link ConfidentialClientApplication} is a singleton and delegates its
- * token cache to {@link RedisTokenCacheAspect}, which persists cache data in Redis.
- * This allows all instances of the application (e.g. pods in an AKS cluster) to
- * share the same token cache, enabling silent token refresh on any instance regardless
- * of which instance handled the original login.
+ * token cache to {@link MsalTokenCacheService}, which either persists data in Redis
+ * ({@link RedisMsalTokenCache}) or in an encrypted HTTP-only cookie
+ * ({@link CookieMsalTokenCache}), depending on the active configuration.
  * <ul>
  *   <li>Refresh tokens are <b>never</b> sent to the browser. They live only in
- *       the Redis-backed server-side cache.</li>
- *   <li>On Redis unavailability the cache falls back to an empty state for that
+ *       the server-side cache (Redis or encrypted cookie).</li>
+ *   <li>On cache unavailability the cache falls back to an empty state for that
  *       operation; the user will be re-authenticated at next request.</li>
  * </ul>
  */
@@ -37,12 +36,12 @@ public class TokenExchangeService {
     private static final int TOKEN_EXCHANGE_TIMEOUT_SECONDS = 30;
 
     private final AppProperties appProperties;
-    private final ITokenCacheAccessAspect tokenCache;
+    private final MsalTokenCacheService tokenCache;
 
     // Field typed as interface for testability; initialised by @PostConstruct init()
     IConfidentialClientApplication msalClient;
 
-    public TokenExchangeService(AppProperties appProperties, ITokenCacheAccessAspect tokenCache) {
+    public TokenExchangeService(AppProperties appProperties, MsalTokenCacheService tokenCache) {
         this.appProperties = appProperties;
         this.tokenCache = tokenCache;
     }
@@ -55,8 +54,8 @@ public class TokenExchangeService {
             .authority(azureAd.getAuthority())
             .setTokenCacheAccessAspect(tokenCache)
             .build();
-        logger.info("MSAL ConfidentialClientApplication initialised for tenant {} with Redis token cache",
-                azureAd.getTenantId());
+        logger.info("MSAL ConfidentialClientApplication initialised for tenant {} (token cache: {})",
+                azureAd.getTenantId(), tokenCache.getClass().getSimpleName());
     }
 
     public IAuthenticationResult exchangeAuthorizationCode(String code, String redirectUri, Set<String> scopes, String codeVerifier) throws Exception {
@@ -77,7 +76,9 @@ public class TokenExchangeService {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Token exchange interrupted", e);
         } catch (ExecutionException e) {
-            throw new RuntimeException("Token exchange failed: " + e.getCause().getMessage(), e.getCause());
+            Throwable cause = e.getCause();
+            throw new RuntimeException("Token exchange failed: " + Objects.toString(cause, "unknown cause"),
+                    cause != null ? cause : e);
         }
     }
 
@@ -94,18 +95,17 @@ public class TokenExchangeService {
      */
     public Optional<IAuthenticationResult> acquireTokenSilently(String homeAccountId, Set<String> scopes) {
         try {
-            IAccount account = msalClient.getAccounts().join().stream()
+            Optional<IAccount> account = msalClient.getAccounts().join().stream()
                     .filter(a -> homeAccountId.equals(a.homeAccountId()))
-                    .findFirst()
-                    .orElse(null);
+                    .findFirst();
 
-            if (account == null) {
+            if (account.isEmpty()) {
                 logger.debug("No cached MSAL account found for homeAccountId ending in '{}'",
                         LogSanitizer.obfuscate(homeAccountId));
                 return Optional.empty();
             }
 
-            SilentParameters parameters = SilentParameters.builder(scopes, account)
+            SilentParameters parameters = SilentParameters.builder(scopes, account.get())
                     .build();
 
             IAuthenticationResult result = msalClient.acquireTokenSilently(parameters)
@@ -118,7 +118,7 @@ public class TokenExchangeService {
             if (e.getCause() instanceof MsalInteractionRequiredException) {
                 logger.info("Silent refresh requires user interaction — refresh token expired or revoked");
             } else {
-                logger.warn("Silent token acquisition failed: {}", e.getCause().getMessage());
+                logger.warn("Silent token acquisition failed: {}", Objects.toString(e.getCause(), "unknown cause"));
             }
             return Optional.empty();
         } catch (TimeoutException e) {

@@ -8,6 +8,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.stereotype.Service;
 
+import java.util.Arrays;
+import java.util.Optional;
+
 /**
  * Centralises all cookie operations so that cookie attributes
  * (HttpOnly, Secure, SameSite, path, maxAge) are configured in one place.
@@ -27,7 +30,6 @@ public class AuthCookieService {
     static final String OAUTH_STATE_COOKIE = "OAUTH_STATE";
     static final String PKCE_VERIFIER_COOKIE = "PKCE_VERIFIER";
     private static final int OAUTH_FLOW_MAX_AGE_SECONDS = 300; // 5 minutes
-
     private final AppProperties appProperties;
 
     public AuthCookieService(AppProperties appProperties) {
@@ -66,14 +68,19 @@ public class AuthCookieService {
                 buildOAuthFlowCookie(PKCE_VERIFIER_COOKIE, verifier, OAUTH_FLOW_MAX_AGE_SECONDS).toString());
     }
 
-    /** Returns the OAuth state value from the request cookies, or {@code null} if absent. */
-    public String getOAuthStateCookie(HttpServletRequest request) {
-        return getCookieValue(request, OAUTH_STATE_COOKIE);
+    /** Returns the AUTH_TOKEN value from the request cookies, or empty if absent. */
+    public Optional<String> getAuthCookie(HttpServletRequest request) {
+        return findCookieValue(request, appProperties.getCookie().getName());
     }
 
-    /** Returns the PKCE verifier value from the request cookies, or {@code null} if absent. */
-    public String getPkceVerifierCookie(HttpServletRequest request) {
-        return getCookieValue(request, PKCE_VERIFIER_COOKIE);
+    /** Returns the OAuth state value from the request cookies, or empty if absent. */
+    public Optional<String> getOAuthStateCookie(HttpServletRequest request) {
+        return findCookieValue(request, OAUTH_STATE_COOKIE);
+    }
+
+    /** Returns the PKCE verifier value from the request cookies, or empty if absent. */
+    public Optional<String> getPkceVerifierCookie(HttpServletRequest request) {
+        return findCookieValue(request, PKCE_VERIFIER_COOKIE);
     }
 
     /** Expires both OAuth flow cookies. Should be called after the callback is processed. */
@@ -82,6 +89,28 @@ public class AuthCookieService {
                 buildOAuthFlowCookie(OAUTH_STATE_COOKIE, "", 0).toString());
         response.addHeader(HttpHeaders.SET_COOKIE,
                 buildOAuthFlowCookie(PKCE_VERIFIER_COOKIE, "", 0).toString());
+    }
+
+    /**
+     * Writes the encrypted MSAL token-cache cookie.
+     * The cookie is {@code HttpOnly}, {@code SameSite=Strict}, and long-lived (90 days by default)
+     * so that the refresh token stored inside it survives browser restarts.
+     */
+    public void setMsalCacheCookie(HttpServletResponse response, String encryptedValue) {
+        response.addHeader(HttpHeaders.SET_COOKIE,
+                buildMsalCacheCookie(encryptedValue, appProperties.getTokenCache().getCookieMaxAge().getSeconds()).toString());
+    }
+
+    /** Expires the MSAL token-cache cookie, causing the browser to delete it. */
+    public void clearMsalCacheCookie(HttpServletResponse response) {
+        response.addHeader(HttpHeaders.SET_COOKIE, buildMsalCacheCookie("", 0).toString());
+    }
+
+    /**
+     * Returns the raw (encrypted) value of the MSAL token-cache cookie, or empty if absent.
+     */
+    public Optional<String> getMsalCacheCookie(HttpServletRequest request) {
+        return findCookieValue(request, appProperties.getTokenCache().getCookieName());
     }
 
     private ResponseCookie buildAuthCookie(String value, long maxAge) {
@@ -95,6 +124,18 @@ public class AuthCookieService {
                 .build();
     }
 
+    private ResponseCookie buildMsalCacheCookie(String value, long maxAge) {
+        AppProperties.TokenCache tokenCache = appProperties.getTokenCache();
+        return ResponseCookie.from(tokenCache.getCookieName(), value)
+                .httpOnly(true)
+                // cookieSecure defaults to true; only set false for local HTTP dev
+                .secure(tokenCache.isCookieSecure())
+                .path("/")
+                .maxAge(maxAge)
+                .sameSite("Strict") // SameSite=Strict is required: the MSAL cache cookie is never needed cross-site
+                .build();
+    }
+
     private ResponseCookie buildOAuthFlowCookie(String name, String value, long maxAge) {
         return ResponseCookie.from(name, value)
                 .httpOnly(true)
@@ -105,16 +146,14 @@ public class AuthCookieService {
                 .build();
     }
 
-    private String getCookieValue(HttpServletRequest request, String name) {
+    private Optional<String> findCookieValue(HttpServletRequest request, String name) {
         Cookie[] cookies = request.getCookies();
         if (cookies == null) {
-            return null;
+            return Optional.empty();
         }
-        for (Cookie cookie : cookies) {
-            if (name.equals(cookie.getName())) {
-                return cookie.getValue();
-            }
-        }
-        return null;
+        return Arrays.stream(cookies)
+                .filter(c -> name.equals(c.getName()))
+                .map(Cookie::getValue)
+                .findFirst();
     }
 }
