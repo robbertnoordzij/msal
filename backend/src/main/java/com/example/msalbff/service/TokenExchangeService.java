@@ -2,6 +2,10 @@ package com.example.msalbff.service;
 
 import com.example.msalbff.config.AppProperties;
 import com.microsoft.aad.msal4j.*;
+import com.azure.identity.ManagedIdentityCredentialBuilder;
+import com.azure.core.credential.TokenCredential;
+import com.azure.core.credential.AccessToken;
+import com.azure.core.credential.TokenRequestContext;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -68,14 +73,70 @@ public class TokenExchangeService {
     @PostConstruct
     public void init() throws Exception {
         AppProperties.AzureAd azureAd = appProperties.getAzureAd();
-        IClientCredential credential = ClientCredentialFactory.createFromSecret(azureAd.getClientSecret());
+        IClientCredential credential = buildCredential(azureAd);
         msalClient = ConfidentialClientApplication.builder(azureAd.getClientId(), credential)
             .authority(azureAd.getAuthority())
             .setTokenCacheAccessAspect(tokenCache)
             .executorService(CALLER_RUNS_EXECUTOR)  // Cache callbacks run on the HTTP request thread
             .build();
-        logger.info("MSAL ConfidentialClientApplication initialised for tenant {} (token cache: {})",
-                azureAd.getTenantId(), tokenCache.getClass().getSimpleName());
+        logger.info("MSAL ConfidentialClientApplication initialised for tenant {} (token cache: {}, credential: {})",
+                azureAd.getTenantId(), tokenCache.getClass().getSimpleName(), azureAd.getCredentialType());
+    }
+
+    /**
+     * Builds the MSAL {@link IClientCredential} based on the configured {@code credentialType}.
+     *
+     * <ul>
+     *   <li>{@code "secret"} — plain client secret (default; suitable for local dev and non-MI environments).</li>
+     *   <li>{@code "managed-identity"} — acquires a short-lived assertion token from the Azure IMDS endpoint
+     *       and presents it as a federated client credential. Requires a <em>Federated Identity Credential</em>
+     *       to be configured on the Azure AD app registration (Azure Portal one-time step).
+     *       <strong>Note:</strong> the assertion is fetched once at startup via
+     *       {@link #buildManagedIdentityTokenCredential}; the MSAL client is re-created on the next
+     *       application start when the assertion approaches expiry. For long-lived processes consider
+     *       scheduling a periodic rebuild of the MSAL client.</li>
+     * </ul>
+     */
+    IClientCredential buildCredential(AppProperties.AzureAd azureAd) {
+        if ("managed-identity".equals(azureAd.getCredentialType())) {
+            TokenCredential miCredential = buildManagedIdentityTokenCredential(azureAd);
+            TokenRequestContext tokenRequestContext =
+                new TokenRequestContext().addScopes("api://AzureADTokenExchange/.default");
+            try {
+                return ClientCredentialFactory.createFromCallback(() -> {
+                    AccessToken token = miCredential.getToken(tokenRequestContext).block();
+                    if (token == null) {
+                        throw new IllegalStateException("Managed identity returned no token — " +
+                            "verify the Federated Identity Credential is configured on the app registration");
+                    }
+                    return token.getToken();
+                });
+            } catch (ExecutionException e) {
+                throw new IllegalStateException("Failed to build managed-identity credential", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Failed to build managed-identity credential", e);
+            }
+        }
+        String clientSecret = azureAd.getClientSecret();
+        if (clientSecret == null || clientSecret.isBlank()) {
+            throw new IllegalStateException(
+                "AZURE_CLIENT_SECRET must be configured when app.azure-ad.credential-type=secret");
+        }
+        return ClientCredentialFactory.createFromSecret(clientSecret);
+    }
+
+    /**
+     * Creates the Azure Identity {@link TokenCredential} for Managed Identity.
+     * Extracted as a protected method to allow overriding in tests without needing
+     * constructor-mocking (mockito-inline).
+     */
+    protected TokenCredential buildManagedIdentityTokenCredential(AppProperties.AzureAd azureAd) {
+        ManagedIdentityCredentialBuilder builder = new ManagedIdentityCredentialBuilder();
+        if (azureAd.getManagedIdentityClientId() != null && !azureAd.getManagedIdentityClientId().isBlank()) {
+            builder.clientId(azureAd.getManagedIdentityClientId());  // user-assigned MI
+        }
+        return builder.build();
     }
 
     public IAuthenticationResult exchangeAuthorizationCode(String code, String redirectUri, Set<String> scopes, String codeVerifier) throws Exception {

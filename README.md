@@ -380,7 +380,10 @@ All configuration lives in `.env`. Running `./configure.sh` (or `./configure.ps1
 |---|---|---|
 | `AZURE_CLIENT_ID` | _(required)_ | Application (client) ID from App Registration |
 | `AZURE_TENANT_ID` | _(required)_ | Directory (tenant) ID |
-| `AZURE_CLIENT_SECRET` | _(required)_ | Client secret from App Registration |
+| **Credential type** | | |
+| `AZURE_CREDENTIAL_TYPE` | `secret` | `secret` — use `AZURE_CLIENT_SECRET`; `managed-identity` — use Azure Managed Identity (no secret needed) |
+| `AZURE_CLIENT_SECRET` | _(required when `AZURE_CREDENTIAL_TYPE=secret`)_ | Client secret from App Registration |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | _(blank)_ | Client ID of a user-assigned Managed Identity. Leave blank for system-assigned. Only used when `AZURE_CREDENTIAL_TYPE=managed-identity` |
 | `FRONTEND_URL` | `http://localhost:3000` | SPA origin (used for CORS + redirect URI) |
 | `BACKEND_URL` | `http://localhost:8080` | BFF origin |
 | `COOKIE_SECURE` | `false` | Set to `true` when running over HTTPS |
@@ -403,6 +406,11 @@ All configuration lives in `.env`. Running `./configure.sh` (or `./configure.ps1
 The following Spring properties are generated from `.env` by `configure.sh`. For reference when editing manually:
 
 ```properties
+# Azure AD credential type
+app.azure-ad.credential-type=secret          # or: managed-identity
+app.azure-ad.client-secret=<secret>          # required when credential-type=secret
+app.azure-ad.managed-identity-client-id=     # optional: user-assigned MI client ID
+
 # Token cache selector
 app.token-cache.type=cookie               # or: redis
 
@@ -420,6 +428,17 @@ app.redis.ttl=90d
 app.redis.tls=false
 app.redis.encryption-key=<base64-key>
 ```
+
+### Managed Identity — Azure Portal one-time setup
+
+When `AZURE_CREDENTIAL_TYPE=managed-identity`, the backend presents its Azure compute identity to Azure AD instead of a client secret. This requires a **Federated Identity Credential** to be configured on the app registration:
+
+1. Open the **app registration** → **Certificates & secrets** → **Federated credentials** → **Add credential**
+2. **Scenario:** _Managed identity_
+3. Select the Managed Identity assigned to the compute resource (App Service, AKS pod, Container App, VM)
+4. Save — no code changes required
+
+The `AZURE_CLIENT_ID` (app registration) is still required; only the credential mechanism changes.
 
 ---
 

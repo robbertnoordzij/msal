@@ -71,6 +71,13 @@
             <artifactId>msal4j</artifactId>
             <version>1.17.2</version>
         </dependency>
+
+        <!-- Azure Identity SDK — Managed Identity credential for production deployments -->
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-identity</artifactId>
+            <version>1.14.2</version>
+        </dependency>
         
         <!-- Spring Boot Configuration Processor -->
         <dependency>

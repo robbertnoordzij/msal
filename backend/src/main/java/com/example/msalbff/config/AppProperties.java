@@ -41,7 +41,28 @@ public class AppProperties {
     public static class AzureAd {
         private String tenantId;
         private String clientId;
+        /**
+         * Client secret used when {@link #credentialType} is {@code "secret"} (the default).
+         * Not required — and should be left blank — when {@code credentialType=managed-identity}.
+         */
         private String clientSecret;
+        /**
+         * Credential type the backend uses to authenticate against Azure AD.
+         * <ul>
+         *   <li>{@code "secret"} (default) — plain client secret; requires {@link #clientSecret}.</li>
+         *   <li>{@code "managed-identity"} — obtains a signed JWT assertion from the Azure IMDS
+         *       endpoint and presents it as a federated client credential. Requires a
+         *       <em>Federated Identity Credential</em> to be configured on the app registration
+         *       in the Azure Portal (one-time step; no code needed).</li>
+         * </ul>
+         */
+        private String credentialType = "secret";
+        /**
+         * Client ID of the user-assigned Managed Identity to use when
+         * {@link #credentialType} is {@code "managed-identity"}.
+         * Leave empty to use the system-assigned Managed Identity.
+         */
+        private String managedIdentityClientId = "";
         private String authority;
         private String jwkSetUri;
         private String redirectUri;
@@ -55,6 +76,12 @@ public class AppProperties {
 
         public String getClientSecret() { return clientSecret; }
         public void setClientSecret(String clientSecret) { this.clientSecret = clientSecret; }
+
+        public String getCredentialType() { return credentialType; }
+        public void setCredentialType(String credentialType) { this.credentialType = credentialType; }
+
+        public String getManagedIdentityClientId() { return managedIdentityClientId; }
+        public void setManagedIdentityClientId(String managedIdentityClientId) { this.managedIdentityClientId = managedIdentityClientId; }
 
         public String getAuthority() { return authority; }
         public void setAuthority(String authority) { this.authority = authority; }

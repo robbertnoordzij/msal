@@ -1,14 +1,22 @@
 package com.example.msalbff.service;
 
+import com.azure.core.credential.AccessToken;
+import com.azure.core.credential.TokenCredential;
+import com.azure.core.credential.TokenRequestContext;
 import com.example.msalbff.config.AppProperties;
 import com.microsoft.aad.msal4j.*;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Field;
+import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -153,4 +161,69 @@ class TokenExchangeServiceTest {
 
         assertTrue(result.isEmpty());
     }
+
+    // ── buildCredential ───────────────────────────────────────────────────────
+
+    @Nested
+    @MockitoSettings(strictness = Strictness.LENIENT)
+    class BuildCredential {
+
+        @Mock
+        private AppProperties.AzureAd azureAd;
+
+        @Test
+        void secret_mode_returnsClientSecretCredential() {
+            when(azureAd.getCredentialType()).thenReturn("secret");
+            when(azureAd.getClientSecret()).thenReturn("super-secret");
+
+            IClientCredential credential = service.buildCredential(azureAd);
+
+            assertNotNull(credential);
+        }
+
+        @Test
+        void secret_mode_throwsWhenClientSecretBlank() {
+            when(azureAd.getCredentialType()).thenReturn("secret");
+            when(azureAd.getClientSecret()).thenReturn("");
+
+            assertThrows(IllegalStateException.class, () -> service.buildCredential(azureAd));
+        }
+
+        @Test
+        void managedIdentity_systemAssigned_buildsCredentialWithoutClientId() throws Exception {
+            when(azureAd.getCredentialType()).thenReturn("managed-identity");
+            when(azureAd.getManagedIdentityClientId()).thenReturn("");
+
+            AccessToken token = new AccessToken("mi-assertion-token", OffsetDateTime.now().plusMinutes(5));
+            TokenCredential mockMiCredential = mock(TokenCredential.class);
+            when(mockMiCredential.getToken(any())).thenReturn(Mono.just(token));
+
+            TokenExchangeService spyService = spy(service);
+            doReturn(mockMiCredential).when(spyService).buildManagedIdentityTokenCredential(azureAd);
+
+            IClientCredential credential = spyService.buildCredential(azureAd);
+
+            assertNotNull(credential);
+            verify(spyService).buildManagedIdentityTokenCredential(azureAd);
+        }
+
+        @Test
+        void managedIdentity_userAssigned_passesClientIdToTokenCredential() throws Exception {
+            when(azureAd.getCredentialType()).thenReturn("managed-identity");
+            when(azureAd.getManagedIdentityClientId()).thenReturn("user-mi-client-id");
+
+            AccessToken token = new AccessToken("mi-assertion-token", OffsetDateTime.now().plusMinutes(5));
+            TokenCredential mockMiCredential = mock(TokenCredential.class);
+            when(mockMiCredential.getToken(any())).thenReturn(Mono.just(token));
+
+            TokenExchangeService spyService = spy(service);
+            doReturn(mockMiCredential).when(spyService).buildManagedIdentityTokenCredential(azureAd);
+
+            IClientCredential credential = spyService.buildCredential(azureAd);
+
+            assertNotNull(credential);
+            verify(spyService).buildManagedIdentityTokenCredential(azureAd);
+        }
+    }
 }
+
