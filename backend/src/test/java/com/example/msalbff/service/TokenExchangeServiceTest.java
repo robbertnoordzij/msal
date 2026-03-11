@@ -114,4 +114,43 @@ class TokenExchangeServiceTest {
         verify(msalClient).acquireTokenSilently(any(SilentParameters.class));
         verify(msalClient, never()).acquireToken(any(AuthorizationCodeParameters.class));
     }
+
+    // ── acquireTokenSilentlyFromCache ─────────────────────────────────────────
+
+    @Test
+    void acquireTokenSilentlyFromCache_returnsResult_whenCachedAccountExists() throws Exception {
+        when(msalClient.getAccounts()).thenReturn(CompletableFuture.completedFuture(Set.of(mockAccount)));
+        when(mockResult.idToken()).thenReturn("restored-id-token");
+        when(msalClient.acquireTokenSilently(any(SilentParameters.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockResult));
+
+        Optional<IAuthenticationResult> result = service.acquireTokenSilentlyFromCache(SCOPES);
+
+        assertTrue(result.isPresent());
+        assertEquals("restored-id-token", result.get().idToken());
+        verify(msalClient).acquireTokenSilently(any(SilentParameters.class));
+    }
+
+    @Test
+    void acquireTokenSilentlyFromCache_returnsEmpty_whenNoCachedAccount() throws Exception {
+        when(msalClient.getAccounts()).thenReturn(CompletableFuture.completedFuture(Set.of()));
+
+        Optional<IAuthenticationResult> result = service.acquireTokenSilentlyFromCache(SCOPES);
+
+        assertTrue(result.isEmpty());
+        verify(msalClient, never()).acquireTokenSilently(any());
+    }
+
+    @Test
+    void acquireTokenSilentlyFromCache_returnsEmpty_whenRefreshTokenExpired() throws Exception {
+        when(msalClient.getAccounts()).thenReturn(CompletableFuture.completedFuture(Set.of(mockAccount)));
+        MsalInteractionRequiredException interactionRequired =
+                mock(MsalInteractionRequiredException.class);
+        when(msalClient.acquireTokenSilently(any(SilentParameters.class)))
+                .thenReturn(CompletableFuture.failedFuture(interactionRequired));
+
+        Optional<IAuthenticationResult> result = service.acquireTokenSilentlyFromCache(SCOPES);
+
+        assertTrue(result.isEmpty());
+    }
 }

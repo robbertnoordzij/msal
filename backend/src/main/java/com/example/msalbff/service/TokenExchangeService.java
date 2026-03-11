@@ -154,6 +154,54 @@ public class TokenExchangeService {
         }
     }
 
+    /**
+     * Silently acquires a new ID token by looking up the first available account from the MSAL
+     * cache without requiring a known {@code homeAccountId} up-front.
+     *
+     * <p>This is the session-restore path: when the AUTH_TOKEN cookie is absent (e.g. its
+     * MaxAge has elapsed) but the MSAL token-cache (Redis entry or encrypted cookie) still
+     * holds a valid refresh token, this method discovers the account and exchanges the refresh
+     * token for a new ID token transparently.
+     *
+     * @param scopes the scopes to request (must include {@code offline_access} for refresh)
+     * @return the new authentication result, or empty if no cached account is found or the
+     *         refresh token has expired / been revoked
+     */
+    public Optional<IAuthenticationResult> acquireTokenSilentlyFromCache(Set<String> scopes) {
+        try {
+            Set<IAccount> accounts = msalClient.getAccounts()
+                    .get(TOKEN_EXCHANGE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (accounts.isEmpty()) {
+                logger.debug("No cached MSAL accounts found; cannot perform session restore");
+                return Optional.empty();
+            }
+            IAccount account = accounts.iterator().next();
+            SilentParameters parameters = SilentParameters.builder(scopes, account).build();
+            IAuthenticationResult result = msalClient.acquireTokenSilently(parameters)
+                    .get(TOKEN_EXCHANGE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            logger.info("Session restored via cached refresh token, new token expires at {}",
+                    result.expiresOnDate());
+            return Optional.of(result);
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof MsalInteractionRequiredException) {
+                logger.info("Session restore requires user interaction — cached refresh token expired or revoked");
+            } else {
+                logger.warn("Session restore failed: {}", Objects.toString(e.getCause(), "unknown cause"));
+            }
+            return Optional.empty();
+        } catch (TimeoutException e) {
+            logger.warn("Session restore timed out after {}s", TOKEN_EXCHANGE_TIMEOUT_SECONDS);
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.warn("Session restore interrupted");
+            return Optional.empty();
+        } catch (Exception e) {
+            logger.warn("Session restore failed unexpectedly: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
     public String generateAuthorizationUrl(String redirectUri, Set<String> scopes, String state, String codeChallenge) throws Exception {
         if (codeChallenge == null || codeChallenge.length() < 43 || codeChallenge.length() > 128) {
             throw new IllegalArgumentException("Invalid code challenge length: " +

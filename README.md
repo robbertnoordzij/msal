@@ -151,11 +151,13 @@ protected void doFilterInternal(HttpServletRequest request,
             setAuthentication(jwt);          // Populates SecurityContext
 
             if (isExpiringSoon(jwt)) {
-                tryRefreshToken(token, response);  // Proactive refresh
+                tryRefreshToken(token, response);  // Proactive refresh only
             }
-        } else {
-            tryRefreshToken(token, response);  // Expired — attempt silent refresh
         }
+        // Invalid/tampered token: do not attempt refresh
+    } else {
+        // AUTH_TOKEN absent — try to restore session from MSAL token cache
+        tryRefreshTokenFromMsalCache(request, response);
     }
 
     filterChain.doFilter(request, response);
@@ -177,11 +179,14 @@ getHelloMessage: async () => api.get('/hello')
 
 ### 3. Refreshing a Token (Silent Refresh)
 
-When the cookie's JWT is expired or within 5 minutes of expiry, the BFF silently acquires a new token using MSAL4J's cached refresh token. The MSAL account ID is derived from the `oid` and `tid` claims already in the JWT — no session or extra storage required.
+The filter handles two distinct refresh scenarios:
 
-**`CookieAuthenticationFilter.java`** — silent refresh logic:
+#### Proactive Refresh (AUTH_TOKEN expiring soon)
+
+When the cookie's JWT is valid but within 5 minutes of expiry, the BFF proactively exchanges the cached refresh token for a new one. The MSAL account ID is derived from the `oid` and `tid` claims in the current JWT — no session or extra storage required.
 
 ```java
+// Triggered when AUTH_TOKEN is valid but isExpiringSoon() returns true
 private void tryRefreshToken(String token, HttpServletResponse response) {
     String homeAccountId = extractHomeAccountId(token);  // Reads oid+tid from JWT claims
     if (homeAccountId == null) return;
@@ -193,6 +198,28 @@ private void tryRefreshToken(String token, HttpServletResponse response) {
     });
 }
 ```
+
+#### Session Restore (AUTH_TOKEN absent, MSAL cache present)
+
+When the AUTH_TOKEN cookie has expired (its `MaxAge` elapsed and the browser deleted it) but the MSAL token cache is still present, the filter can restore the session without requiring re-login. This is the primary benefit of `app.token-cache.type=cookie`: the `MSAL_TOKEN_CACHE` cookie survives well past the shorter-lived `AUTH_TOKEN`.
+
+```java
+// Triggered when AUTH_TOKEN cookie is completely absent
+private void tryRefreshTokenFromMsalCache(HttpServletRequest request,
+                                          HttpServletResponse response) {
+    if (authCookieService.getMsalCacheCookie(request).isEmpty()) return;
+
+    tokenExchangeService.acquireTokenSilentlyFromCache(scopes).ifPresent(result -> {
+        Jwt jwt = tokenValidationService.parseToken(result.idToken());
+        setAuthentication(jwt);
+        authCookieService.setAuthCookie(response, result.idToken());  // Session re-established
+    });
+}
+```
+
+`acquireTokenSilentlyFromCache` calls `msalClient.getAccounts()` which triggers `beforeCacheAccess` to load the MSAL cache (from the encrypted cookie), discovers the cached account, and then performs the refresh token exchange.
+
+> **Redis mode note:** This restore path only triggers when `MSAL_TOKEN_CACHE` cookie is present, which only exists in cookie cache mode. In Redis mode, the session cannot be restored once `AUTH_TOKEN` has expired without a known `homeAccountId`.
 
 ---
 

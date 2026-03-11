@@ -10,8 +10,19 @@ box "Backend (Spring Boot BFF)" #LightBlue
     participant "Token Validation\nService" as TVS
     participant "API Controller" as API
 end box
-database "Redis\n(Token Cache)" as Redis
+database "Redis\n(Token Cache)" as Redis #Pink
+database "MSAL_TOKEN_CACHE\n(Encrypted Cookie)" as CookieCache #LightGreen
 participant "Entra ID\n(Azure AD)" as Entra
+
+note over Redis, CookieCache
+  Two token cache backends — choose one:
+  **Option A — Redis** (default): app.token-cache.type=redis
+    Clustered deployments; cache lives server-side.
+  **Option B — Cookie**: app.token-cache.type=cookie
+    Single-instance / no-Redis deployments; cache stored in
+    an AES-256-GCM-encrypted HTTP-only cookie (MSAL_TOKEN_CACHE).
+    Only RefreshToken + Account sections are persisted.
+end note
 
 == Authentication Flow ==
 
@@ -32,9 +43,16 @@ AC -> AC : Read PKCE_VERIFIER cookie\nClear both OAuth flow cookies
 AC -> TES : exchangeAuthorizationCode(code, verifier)
 TES -> Entra : POST /token\n(code + code_verifier + client_secret + redirect_uri)
 Entra -> TES : ID Token + Access Token + Refresh Token
-note right of TES : Access & Refresh Tokens stay server-side.\nThey are NEVER sent to the browser.
-TES -> Redis : afterCacheAccess: write encrypted MSAL cache\n(key: msal:token-cache:{oid.tid}, AES-256-GCM)
-note right of Redis : Per-user isolation by homeAccountId (oid.tid).\nShared across all BFF replicas in the cluster.\nFault-tolerant: Redis failure → empty cache (no crash).
+note right of TES : Access & Refresh Tokens stay server-side.\nThey are NEVER sent to the browser in plain text.
+
+alt Option A — Redis cache
+    TES -> Redis : afterCacheAccess: write encrypted MSAL cache\n(key: msal:token-cache:{oid.tid}, AES-256-GCM)
+    note right of Redis : Per-user isolation by homeAccountId (oid.tid).\nShared across all BFF replicas in the cluster.
+else Option B — Cookie cache
+    TES -> CookieCache : afterCacheAccess: write MSAL_TOKEN_CACHE cookie\n(AES-256-GCM encrypted, HttpOnly, SameSite=Strict)
+    note right of CookieCache : Only RefreshToken + Account sections stored.\nPayload ≈ 300–800 bytes after compress + encrypt.\nBound to this browser — no clustering.
+end
+
 TES -> AC : IAuthenticationResult
 
 AC -> AC : Extract ID Token (aud=clientId)
@@ -55,30 +73,65 @@ CAF -> API : Forward authenticated request
 API -> FE : JSON Response (e.g., "Hello <name>!")
 FE -> User : Display Data
 
-== Silent Token Refresh (on expiry) ==
+== Silent Token Refresh (AUTH_TOKEN present, expiring within 5 min) ==
 
-note over CAF : Triggered when AUTH_TOKEN cookie is\nexpired OR expiring within 5 minutes
+note over CAF : Only triggered when AUTH_TOKEN is\npresent and valid but expiring within 5 minutes.\n**Invalid or tampered tokens are not refreshed.**
 CAF -> CAF : Parse oid + tid claims from AUTH_TOKEN\nDerive homeAccountId = oid.tid
 CAF -> TES : acquireTokenSilently(homeAccountId, scopes)
-TES -> Redis : beforeCacheAccess: read encrypted MSAL cache\n(key: msal:token-cache:{oid.tid})
-note right of Redis : Encryption: AES-256-GCM, random IV per entry.\nIf Redis is unavailable: log WARN, start with empty cache\n(forces full re-exchange, no 500 error).
-Redis -> TES : Cached MSAL token JSON (decrypted)
+
+alt Option A — Redis cache
+    TES -> Redis : beforeCacheAccess: read encrypted MSAL cache\n(key: msal:token-cache:{oid.tid})
+    note right of Redis : If Redis unavailable: log WARN, empty cache\n(forces full re-exchange, no 500 error).
+    Redis -> TES : Cached MSAL token JSON (decrypted)
+else Option B — Cookie cache
+    TES -> CookieCache : beforeCacheAccess: read MSAL_TOKEN_CACHE cookie\n(decrypt AES-256-GCM, decompress, deserialize)
+    note right of CookieCache : Decryption errors (key rotation, tampered)\nare logged and treated as empty cache.
+    CookieCache -> TES : Cached MSAL token JSON (RefreshToken + Account)
+end
+
 TES -> TES : Look up IAccount from deserialized cache
-note right of TES : Refresh tokens are loaded here from Redis.\nThey are NEVER sent to the browser.
 TES -> Entra : Use cached refresh token\n(POST /token with refresh_token grant)
 Entra -> TES : New ID Token + Access Token
-TES -> Redis : afterCacheAccess: write updated cache entry
+
+alt Option A — Redis cache
+    TES -> Redis : afterCacheAccess: write updated cache entry
+else Option B — Cookie cache
+    TES -> CookieCache : afterCacheAccess: update MSAL_TOKEN_CACHE cookie
+end
+
 TES -> CAF : Optional<IAuthenticationResult>
 CAF -> CAF : Validate new ID token\nUpdate AUTH_TOKEN cookie\nSet new SecurityContext
-note right of CAF : If refresh token expired/revoked,\nOptional is empty → user gets 401\nand must re-authenticate
+note right of CAF : If refresh token expired/revoked,\nOptional is empty → user gets 401\nand must re-authenticate.
+
+== Session Restore (AUTH_TOKEN absent, MSAL cache present) ==
+
+note over CAF : AUTH_TOKEN cookie has expired (MaxAge elapsed)\nbut MSAL_TOKEN_CACHE cookie is still present.\nThis path is primary for **cookie cache mode**;\nRedis mode has no MSAL_TOKEN_CACHE cookie and\ncannot restore sessions without a homeAccountId.
+CAF -> CAF : No AUTH_TOKEN → check MSAL_TOKEN_CACHE cookie\n(authCookieService.getMsalCacheCookie)
+CAF -> TES : acquireTokenSilentlyFromCache(scopes)
+
+TES -> CookieCache : getAccounts() → beforeCacheAccess:\n  read MSAL_TOKEN_CACHE cookie, deserialize cache
+CookieCache -> TES : IAccount (first cached account)
+TES -> Entra : Use cached refresh token\n(POST /token with refresh_token grant)
+Entra -> TES : New ID Token + Access Token
+TES -> CookieCache : afterCacheAccess: update MSAL_TOKEN_CACHE cookie
+TES -> CAF : Optional<IAuthenticationResult>
+CAF -> CAF : Validate new ID token\nSet AUTH_TOKEN cookie (session re-established)\nSet SecurityContext
+note right of CAF : If no cached account or refresh token expired,\nOptional is empty → user gets 401 and must log in again.
 
 == Logout ==
 
 User -> FE : Clicks Logout
 FE -> AC : POST /api/auth/logout
 AC -> AC : Read AUTH_TOKEN cookie\nParse oid + tid claims\nDerive homeAccountId = oid.tid
-AC -> Redis : Evict cache entry (DELETE msal:token-cache:{oid.tid})
-note right of Redis : Immediate invalidation — no waiting for TTL.\nPrevents the evicted refresh token from being\nusable on any other pod in the cluster.
+
+alt Option A — Redis cache
+    AC -> Redis : Evict cache entry (DELETE msal:token-cache:{oid.tid})
+    note right of Redis : Immediate invalidation — prevents\nevicted refresh token being reused\non any pod in the cluster.
+else Option B — Cookie cache
+    AC -> CookieCache : clearMsalCacheCookie (Max-Age=0)
+    note right of CookieCache : Browser deletes MSAL_TOKEN_CACHE immediately.\nNext request with this browser cannot restore session.
+end
+
 AC -> AC : Set AUTH_TOKEN cookie with maxAge=0
 AC -> FE : 200 OK (browser deletes cookie)
 FE -> User : Show unauthenticated state

@@ -32,15 +32,14 @@ import java.util.List;
  * <ol>
  *   <li>If the token is valid and <em>not</em> expiring soon — authenticate normally.</li>
  *   <li>If the token is valid but expiring within {@value #PROACTIVE_REFRESH_THRESHOLD_SECONDS}
- *       seconds — authenticate with the current token and silently refresh in the background.</li>
- *   <li>If the token is expired or otherwise invalid — attempt a silent refresh using the
- *       MSAL-cached refresh token. If that succeeds, set authentication and update the cookie;
- *       otherwise the request proceeds unauthenticated (Spring Security returns 401).</li>
+ *       seconds — authenticate with the current token and silently refresh it.</li>
+ *   <li>If AUTH_TOKEN is absent but the MSAL token-cache cookie ({@code MSAL_TOKEN_CACHE}) is
+ *       present — attempt to restore the session by acquiring a new token using the cached
+ *       refresh token. If successful, re-sets AUTH_TOKEN. This path is primarily useful with the
+ *       cookie-backed MSAL cache ({@code app.token-cache.type=cookie}).</li>
+ *   <li>If AUTH_TOKEN is absent and no MSAL cache is available, or the token is invalid —
+ *       the request proceeds unauthenticated (Spring Security returns 401).</li>
  * </ol>
- *
- * <p>The MSAL account identifier required for silent refresh is derived on-the-fly from the
- * {@code oid} and {@code tid} claims embedded in the AUTH_TOKEN cookie itself ({@code oid.tid}).
- * No server-side session or additional storage is required.
  */
 public class CookieAuthenticationFilter extends OncePerRequestFilter {
 
@@ -81,10 +80,11 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
                 if (isExpiringSoon(jwt)) {
                     tryRefreshToken(token, response);
                 }
-            } else {
-                // Token invalid or expired — attempt silent refresh before giving up
-                tryRefreshToken(token, response);
             }
+            // Invalid/tampered token: do not attempt refresh; let the request proceed unauthenticated.
+        } else {
+            // AUTH_TOKEN absent — try to restore session from the MSAL token cache.
+            tryRefreshTokenFromMsalCache(request, response);
         }
 
         filterChain.doFilter(request, response);
@@ -113,6 +113,30 @@ public class CookieAuthenticationFilter extends OncePerRequestFilter {
                 logger.warn("Silent refresh returned result but ID token is missing or invalid");
             }
         });
+    }
+
+    /**
+     * Attempts to restore an expired or missing session by acquiring a new token from the
+     * MSAL token cache without a known homeAccountId.
+     * Only triggered when the MSAL cache cookie is present (cookie-cache mode).
+     */
+    private void tryRefreshTokenFromMsalCache(HttpServletRequest request, HttpServletResponse response) {
+        if (authCookieService.getMsalCacheCookie(request).isEmpty()) {
+            return;
+        }
+        tokenExchangeService.acquireTokenSilentlyFromCache(appProperties.getAzureAd().scopesAsSet())
+                .ifPresent(result -> {
+                    String newIdToken = result.idToken();
+                    if (newIdToken != null && tokenValidationService.validateToken(newIdToken)) {
+                        Jwt jwt = tokenValidationService.parseToken(newIdToken);
+                        setAuthentication(jwt);
+                        authCookieService.setAuthCookie(response, newIdToken);
+                        logger.info("Session restored from MSAL cache for user '{}'",
+                                tokenValidationService.getUserName(jwt));
+                    } else {
+                        logger.warn("Session restore returned result but ID token is missing or invalid");
+                    }
+                });
     }
 
     /**

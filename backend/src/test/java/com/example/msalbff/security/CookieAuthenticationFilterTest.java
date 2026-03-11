@@ -74,39 +74,16 @@ class CookieAuthenticationFilterTest {
     }
 
     @Test
-    void invalidToken_noAccountClaims_leavesContextEmpty() throws Exception {
+    void invalidToken_leavesContextEmpty_andDoesNotRefresh() throws Exception {
         givenAuthCookie("invalid-token");
         when(request.getServletPath()).thenReturn("/hello");
         when(tokenValidationService.validateToken("invalid-token")).thenReturn(false);
-        // parseToken("invalid-token") not stubbed — returns null, extractHomeAccountId returns null
 
         filter.doFilter(request, response, filterChain);
 
         assertNull(SecurityContextHolder.getContext().getAuthentication());
         verify(filterChain).doFilter(request, response);
-    }
-
-    @Test
-    void invalidToken_withAccountClaims_attemptsRefresh() throws Exception {
-        givenAuthCookie("expired-token");
-        when(request.getServletPath()).thenReturn("/hello");
-        when(tokenValidationService.validateToken("expired-token")).thenReturn(false);
-        givenTokenWithAccountClaims("expired-token", ACCOUNT_ID);
-
-        IAuthenticationResult refreshResult = mock(IAuthenticationResult.class);
-        when(refreshResult.idToken()).thenReturn("new-id-token");
-        when(tokenExchangeService.acquireTokenSilently(eq(ACCOUNT_ID), any()))
-                .thenReturn(Optional.of(refreshResult));
-        when(tokenValidationService.validateToken("new-id-token")).thenReturn(true);
-        when(tokenValidationService.parseToken("new-id-token")).thenReturn(jwt);
-        when(tokenValidationService.getUserName(jwt)).thenReturn("user@example.com");
-
-        filter.doFilter(request, response, filterChain);
-
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        assertNotNull(auth);
-        assertEquals("user@example.com", auth.getName());
-        verify(authCookieService).setAuthCookie(eq(response), eq("new-id-token"));
+        verifyNoInteractions(tokenExchangeService);
     }
 
     @Test
@@ -157,18 +134,55 @@ class CookieAuthenticationFilterTest {
         verifyNoInteractions(tokenValidationService);
     }
 
+    // ── No AUTH_TOKEN cookie — session restore via MSAL cache ────────────────
+
     @Test
-    void silentRefreshFails_leavesContextEmpty() throws Exception {
-        givenAuthCookie("expired-token");
+    void noAuthToken_withMsalCache_restoresSession() throws Exception {
+        givenNoAuthCookie();
         when(request.getServletPath()).thenReturn("/hello");
-        when(tokenValidationService.validateToken("expired-token")).thenReturn(false);
-        givenTokenWithAccountClaims("expired-token", ACCOUNT_ID);
-        when(tokenExchangeService.acquireTokenSilently(eq(ACCOUNT_ID), any()))
-                .thenReturn(Optional.empty());
+        when(authCookieService.getMsalCacheCookie(request)).thenReturn(Optional.of("encrypted-cache"));
+
+        IAuthenticationResult restoreResult = mock(IAuthenticationResult.class);
+        when(restoreResult.idToken()).thenReturn("restored-id-token");
+        when(tokenExchangeService.acquireTokenSilentlyFromCache(any()))
+                .thenReturn(Optional.of(restoreResult));
+        when(tokenValidationService.validateToken("restored-id-token")).thenReturn(true);
+        when(tokenValidationService.parseToken("restored-id-token")).thenReturn(jwt);
+        when(tokenValidationService.getUserName(jwt)).thenReturn("user@example.com");
+
+        filter.doFilter(request, response, filterChain);
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        assertNotNull(auth);
+        assertEquals("user@example.com", auth.getName());
+        verify(authCookieService).setAuthCookie(eq(response), eq("restored-id-token"));
+        verify(filterChain).doFilter(request, response);
+    }
+
+    @Test
+    void noAuthToken_withoutMsalCache_doesNotAttemptRestore() throws Exception {
+        givenNoAuthCookie();
+        when(request.getServletPath()).thenReturn("/hello");
+        when(authCookieService.getMsalCacheCookie(request)).thenReturn(Optional.empty());
 
         filter.doFilter(request, response, filterChain);
 
         assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verifyNoInteractions(tokenExchangeService);
+        verify(filterChain).doFilter(request, response);
+    }
+
+    @Test
+    void noAuthToken_withMsalCache_restoreFails_leavesContextEmpty() throws Exception {
+        givenNoAuthCookie();
+        when(request.getServletPath()).thenReturn("/hello");
+        when(authCookieService.getMsalCacheCookie(request)).thenReturn(Optional.of("encrypted-cache"));
+        when(tokenExchangeService.acquireTokenSilentlyFromCache(any())).thenReturn(Optional.empty());
+
+        filter.doFilter(request, response, filterChain);
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+        verify(authCookieService, never()).setAuthCookie(any(), any());
         verify(filterChain).doFilter(request, response);
     }
 
@@ -178,11 +192,7 @@ class CookieAuthenticationFilterTest {
         when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(COOKIE_NAME, token)});
     }
 
-    private void givenTokenWithAccountClaims(String token, String accountId) {
-        String[] parts = accountId.split("\\.", 2);
-        Jwt accountJwt = mock(Jwt.class);
-        when(accountJwt.getClaimAsString("oid")).thenReturn(parts[0]);
-        when(accountJwt.getClaimAsString("tid")).thenReturn(parts[1]);
-        when(tokenValidationService.parseToken(token)).thenReturn(accountJwt);
+    private void givenNoAuthCookie() {
+        when(request.getCookies()).thenReturn(null);
     }
 }
