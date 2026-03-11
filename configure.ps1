@@ -108,26 +108,31 @@ $backendConfig = @"
 spring.application.name=msal-bff
 
 # Server Configuration
-server.port=$($env_vars['BACKEND_PORT'])
-server.servlet.context-path=$($env_vars['BACKEND_CONTEXT_PATH'])
+server.port=$($env_vars.ContainsKey('BACKEND_PORT') ? $env_vars['BACKEND_PORT'] : '8080')
+server.servlet.context-path=$($env_vars.ContainsKey('BACKEND_CONTEXT_PATH') ? $env_vars['BACKEND_CONTEXT_PATH'] : '/api')
 
 # Azure AD — single source of truth
 app.azure-ad.tenant-id=$($env_vars['AZURE_TENANT_ID'])
 app.azure-ad.client-id=$($env_vars['AZURE_CLIENT_ID'])
-app.azure-ad.client-secret=$($env_vars['AZURE_CLIENT_SECRET'])
+app.azure-ad.client-secret=$($env_vars.ContainsKey('AZURE_CLIENT_SECRET') ? $env_vars['AZURE_CLIENT_SECRET'] : '')
 app.azure-ad.authority=https://login.microsoftonline.com/`${app.azure-ad.tenant-id}
 app.azure-ad.jwk-set-uri=`${app.azure-ad.authority}/discovery/v2.0/keys
-app.azure-ad.redirect-uri=$($env_vars['FRONTEND_URL'])$($env_vars['BACKEND_CONTEXT_PATH'])/auth/callback
+app.azure-ad.redirect-uri=$($env_vars.ContainsKey('FRONTEND_URL') ? $env_vars['FRONTEND_URL'] : 'http://localhost:3000')$($env_vars.ContainsKey('BACKEND_CONTEXT_PATH') ? $env_vars['BACKEND_CONTEXT_PATH'] : '/api')/auth/callback
 app.azure-ad.scopes=openid profile offline_access User.Read
 
 # Cookie Configuration
-app.cookie.name=$($env_vars['COOKIE_NAME'])
-app.cookie.max-age=$($env_vars['COOKIE_MAX_AGE'])
-app.cookie.secure=$($env_vars['COOKIE_SECURE'])
-app.cookie.same-site=$($env_vars['COOKIE_SAME_SITE'])
+app.cookie.name=$($env_vars.ContainsKey('COOKIE_NAME') ? $env_vars['COOKIE_NAME'] : 'AUTH_TOKEN')
+app.cookie.max-age=$($env_vars.ContainsKey('COOKIE_MAX_AGE') ? $env_vars['COOKIE_MAX_AGE'] : '3600')
+app.cookie.secure=$($env_vars.ContainsKey('COOKIE_SECURE') ? $env_vars['COOKIE_SECURE'] : 'false')
+app.cookie.same-site=$($env_vars.ContainsKey('COOKIE_SAME_SITE') ? $env_vars['COOKIE_SAME_SITE'] : 'Lax')
 
 # CORS Configuration
-app.cors.allowed-origins=$($env_vars['FRONTEND_URL'])
+app.cors.allowed-origins=$($env_vars.ContainsKey('FRONTEND_URL') ? $env_vars['FRONTEND_URL'] : 'http://localhost:3000')
+
+# MSAL Token Cache
+app.token-cache.type=$($env_vars.ContainsKey('TOKEN_CACHE_TYPE') ? $env_vars['TOKEN_CACHE_TYPE'] : 'redis')
+app.token-cache.cookie.encryption-key=$($env_vars.ContainsKey('TOKEN_CACHE_COOKIE_ENCRYPTION_KEY') ? $env_vars['TOKEN_CACHE_COOKIE_ENCRYPTION_KEY'] : '')
+app.token-cache.cookie.secure=$($env_vars.ContainsKey('TOKEN_CACHE_COOKIE_SECURE') ? $env_vars['TOKEN_CACHE_COOKIE_SECURE'] : 'false')
 
 # Redis — distributed MSAL token cache
 app.redis.host=$($env_vars.ContainsKey('REDIS_HOST') ? $env_vars['REDIS_HOST'] : 'localhost')
@@ -138,8 +143,8 @@ app.redis.tls=$($env_vars.ContainsKey('REDIS_TLS') ? $env_vars['REDIS_TLS'] : 'f
 app.redis.encryption-key=$($env_vars.ContainsKey('REDIS_ENCRYPTION_KEY') ? $env_vars['REDIS_ENCRYPTION_KEY'] : '')
 
 # Logging
-logging.level.com.example=$($env_vars['LOG_LEVEL'])
-logging.level.org.springframework.security=$($env_vars['LOG_LEVEL'])
+logging.level.com.example=$($env_vars.ContainsKey('LOG_LEVEL') ? $env_vars['LOG_LEVEL'] : 'DEBUG')
+logging.level.org.springframework.security=$($env_vars.ContainsKey('LOG_LEVEL') ? $env_vars['LOG_LEVEL'] : 'DEBUG')
 "@
 
 $backendConfig | Out-File -FilePath "backend/src/main/resources/application.properties" -Encoding UTF8

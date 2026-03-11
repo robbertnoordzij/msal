@@ -25,30 +25,48 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Read TOKEN_CACHE_TYPE from .env (after configure succeeds, .env is known to exist)
+TOKEN_CACHE_TYPE=$(grep "^TOKEN_CACHE_TYPE=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
+TOKEN_CACHE_TYPE=${TOKEN_CACHE_TYPE:-redis}
+
+# Validate cookie encryption key when cookie mode is selected
+if [ "$TOKEN_CACHE_TYPE" = "cookie" ]; then
+    TOKEN_CACHE_COOKIE_ENCRYPTION_KEY=$(grep "^TOKEN_CACHE_COOKIE_ENCRYPTION_KEY=" .env 2>/dev/null | cut -d'=' -f2 | tr -d '[:space:]')
+    if [ -z "$TOKEN_CACHE_COOKIE_ENCRYPTION_KEY" ]; then
+        echo -e "${RED}✗ TOKEN_CACHE_COOKIE_ENCRYPTION_KEY must be set in .env when TOKEN_CACHE_TYPE=cookie.${NC}"
+        echo -e "${YELLOW}  Generate a key with: openssl rand -base64 32${NC}"
+        exit 1
+    fi
+fi
+
 echo ""
 
-# Step 2: Start Redis via Docker Compose
-echo -e "${CYAN}Step 2: Starting Redis (Docker Compose)...${NC}"
-if command -v docker &> /dev/null; then
-    docker compose up -d redis
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}⚠ Docker Compose failed to start Redis. Ensure Docker is running.${NC}"
-        echo -e "${YELLOW}  The backend requires Redis on localhost:6379. Start it manually if needed.${NC}"
+# Step 2: Start Redis (only needed when TOKEN_CACHE_TYPE=redis)
+if [ "$TOKEN_CACHE_TYPE" = "redis" ]; then
+    echo -e "${CYAN}Step 2: Starting Redis (Docker Compose)...${NC}"
+    if command -v docker &> /dev/null; then
+        docker compose up -d redis
+        if [ $? -ne 0 ]; then
+            echo -e "${YELLOW}⚠ Docker Compose failed to start Redis. Ensure Docker is running.${NC}"
+            echo -e "${YELLOW}  The backend requires Redis on localhost:6379. Start it manually if needed.${NC}"
+        else
+            echo -e "${GREEN}✓ Redis started${NC}"
+            echo -e "${GRAY}Waiting for Redis to be ready...${NC}"
+            for i in $(seq 1 10); do
+                if docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
+                    echo -e "${GREEN}✓ Redis is ready${NC}"
+                    break
+                fi
+                sleep 1
+            done
+        fi
     else
-        echo -e "${GREEN}✓ Redis started${NC}"
-        # Brief wait for Redis healthcheck to pass
-        echo -e "${GRAY}Waiting for Redis to be ready...${NC}"
-        for i in $(seq 1 10); do
-            if docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
-                echo -e "${GREEN}✓ Redis is ready${NC}"
-                break
-            fi
-            sleep 1
-        done
+        echo -e "${YELLOW}⚠ Docker not found — skipping Redis startup.${NC}"
+        echo -e "${YELLOW}  Please ensure Redis is running on localhost:6379 before starting the backend.${NC}"
     fi
 else
-    echo -e "${YELLOW}⚠ Docker not found — skipping Redis startup.${NC}"
-    echo -e "${YELLOW}  Please ensure Redis is running on localhost:6379 before starting the backend.${NC}"
+    echo -e "${CYAN}Step 2: Skipping Redis (TOKEN_CACHE_TYPE=${TOKEN_CACHE_TYPE})${NC}"
+    echo -e "${GREEN}✓ Cookie-based token cache — no Redis required${NC}"
 fi
 
 echo ""

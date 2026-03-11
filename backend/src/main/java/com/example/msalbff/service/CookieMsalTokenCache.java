@@ -1,6 +1,9 @@
 package com.example.msalbff.service;
 
 import com.example.msalbff.config.AppProperties;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.microsoft.aad.msal4j.ITokenCacheAccessContext;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
@@ -15,6 +18,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.List;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -67,6 +71,15 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
      * to leave room for the cookie name and attribute string.
      */
     static final int MAX_COOKIE_VALUE_BYTES = 4090;
+
+    /**
+     * Only these sections of the MSAL token cache are persisted to the cookie.
+     * Access tokens and ID tokens are intentionally omitted — they can be re-acquired
+     * from the refresh token and would bloat the cookie beyond the 4 KB browser limit.
+     */
+    private static final List<String> PERSISTED_CACHE_SECTIONS = List.of("RefreshToken", "Account");
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AuthCookieService authCookieService;
     private final TokenCacheEncryption encryption;
@@ -127,7 +140,28 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
     }
 
     private String encryptCache(ITokenCacheAccessContext context) throws Exception {
-        return encryption.encrypt(compressAndEncode(context.tokenCache().serialize()));
+        String fullJson = context.tokenCache().serialize();
+        String slimJson = retainPersistedSections(fullJson);
+        return encryption.encrypt(compressAndEncode(slimJson));
+    }
+
+    /**
+     * Strips sections not needed for silent refresh ({@code AccessToken}, {@code IdToken},
+     * {@code AppMetadata}) from the MSAL cache JSON before it is stored in the cookie.
+     * Only {@code RefreshToken} and {@code Account} are retained.
+     *
+     * <p>This keeps the encrypted payload well within the 4 KB cookie limit regardless
+     * of how many access-token scopes the user has requested.
+     */
+    static String retainPersistedSections(String json) throws IOException {
+        JsonNode root = OBJECT_MAPPER.readTree(json);
+        ObjectNode slim = OBJECT_MAPPER.createObjectNode();
+        for (String section : PERSISTED_CACHE_SECTIONS) {
+            if (root.has(section)) {
+                slim.set(section, root.get(section));
+            }
+        }
+        return OBJECT_MAPPER.writeValueAsString(slim);
     }
 
     private boolean exceedsCookieSizeLimit(String cookieValue) {

@@ -7,10 +7,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import java.net.URI;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -35,6 +37,23 @@ public class TokenExchangeService {
     private static final Logger logger = LoggerFactory.getLogger(TokenExchangeService.class);
     private static final int TOKEN_EXCHANGE_TIMEOUT_SECONDS = 30;
 
+    /**
+     * A "caller-runs" ExecutorService that executes each task synchronously on the submitting thread.
+     * This ensures MSAL4J cache callbacks run on the HTTP request thread, where
+     * {@link org.springframework.web.context.request.RequestContextHolder} has the request bound.
+     * Since we always block on {@code acquireToken(...).get(timeout)}, there is no change in
+     * effective concurrency — only which thread executes the work.
+     */
+    private static final java.util.concurrent.ExecutorService CALLER_RUNS_EXECUTOR =
+        new AbstractExecutorService() {
+            public void execute(Runnable command) { command.run(); }
+            public void shutdown() {}
+            public java.util.List<Runnable> shutdownNow() { return Collections.emptyList(); }
+            public boolean isShutdown() { return false; }
+            public boolean isTerminated() { return false; }
+            public boolean awaitTermination(long timeout, TimeUnit unit) { return true; }
+        };
+
     private final AppProperties appProperties;
     private final MsalTokenCacheService tokenCache;
 
@@ -53,6 +72,7 @@ public class TokenExchangeService {
         msalClient = ConfidentialClientApplication.builder(azureAd.getClientId(), credential)
             .authority(azureAd.getAuthority())
             .setTokenCacheAccessAspect(tokenCache)
+            .executorService(CALLER_RUNS_EXECUTOR)  // Cache callbacks run on the HTTP request thread
             .build();
         logger.info("MSAL ConfidentialClientApplication initialised for tenant {} (token cache: {})",
                 azureAd.getTenantId(), tokenCache.getClass().getSimpleName());

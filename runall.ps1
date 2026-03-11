@@ -13,29 +13,54 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Read TOKEN_CACHE_TYPE from .env (after configure succeeds, .env is known to exist)
+$tokenCacheType = 'redis'
+$envContent = Get-Content ".env" -ErrorAction SilentlyContinue
+if ($envContent) {
+    $tokenCacheLine = $envContent | Where-Object { $_ -match "^TOKEN_CACHE_TYPE=" } | Select-Object -First 1
+    if ($tokenCacheLine) { $tokenCacheType = ($tokenCacheLine -split '=', 2)[1].Trim() }
+}
+
+# Validate cookie encryption key when cookie mode is selected
+if ($tokenCacheType -eq 'cookie') {
+    $cookieKey = ''
+    $cookieKeyLine = $envContent | Where-Object { $_ -match "^TOKEN_CACHE_COOKIE_ENCRYPTION_KEY=" } | Select-Object -First 1
+    if ($cookieKeyLine) { $cookieKey = ($cookieKeyLine -split '=', 2)[1].Trim() }
+    if (-not $cookieKey) {
+        Write-Host "✗ TOKEN_CACHE_COOKIE_ENCRYPTION_KEY must be set in .env when TOKEN_CACHE_TYPE=cookie." -ForegroundColor Red
+        Write-Host "  Generate a key with: openssl rand -base64 32" -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 Write-Host ""
 
-# Step 2: Start Redis via Docker Compose
-Write-Host "Step 2: Starting Redis (Docker Compose)..." -ForegroundColor Cyan
-if (Get-Command docker -ErrorAction SilentlyContinue) {
-    docker compose up -d redis
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "⚠ Docker Compose failed to start Redis. Ensure Docker is running." -ForegroundColor Yellow
-        Write-Host "  The backend requires Redis on localhost:6379. Start it manually if needed." -ForegroundColor Yellow
-    } else {
-        Write-Host "✓ Redis started" -ForegroundColor Green
-        Write-Host "Waiting for Redis to be ready..." -ForegroundColor Gray
-        $ready = $false
-        for ($i = 0; $i -lt 10; $i++) {
-            $ping = docker compose exec -T redis redis-cli ping 2>$null
-            if ($ping -match "PONG") { $ready = $true; break }
-            Start-Sleep -Seconds 1
+# Step 2: Start Redis (only needed when TOKEN_CACHE_TYPE=redis)
+if ($tokenCacheType -eq 'redis') {
+    Write-Host "Step 2: Starting Redis (Docker Compose)..." -ForegroundColor Cyan
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        docker compose up -d redis
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "⚠ Docker Compose failed to start Redis. Ensure Docker is running." -ForegroundColor Yellow
+            Write-Host "  The backend requires Redis on localhost:6379. Start it manually if needed." -ForegroundColor Yellow
+        } else {
+            Write-Host "✓ Redis started" -ForegroundColor Green
+            Write-Host "Waiting for Redis to be ready..." -ForegroundColor Gray
+            $ready = $false
+            for ($i = 0; $i -lt 10; $i++) {
+                $ping = docker compose exec -T redis redis-cli ping 2>$null
+                if ($ping -match "PONG") { $ready = $true; break }
+                Start-Sleep -Seconds 1
+            }
+            if ($ready) { Write-Host "✓ Redis is ready" -ForegroundColor Green }
         }
-        if ($ready) { Write-Host "✓ Redis is ready" -ForegroundColor Green }
+    } else {
+        Write-Host "⚠ Docker not found — skipping Redis startup." -ForegroundColor Yellow
+        Write-Host "  Please ensure Redis is running on localhost:6379 before starting the backend." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "⚠ Docker not found — skipping Redis startup." -ForegroundColor Yellow
-    Write-Host "  Please ensure Redis is running on localhost:6379 before starting the backend." -ForegroundColor Yellow
+    Write-Host "Step 2: Skipping Redis (TOKEN_CACHE_TYPE=$tokenCacheType)" -ForegroundColor Cyan
+    Write-Host "✓ Cookie-based token cache — no Redis required" -ForegroundColor Green
 }
 
 Write-Host ""

@@ -41,6 +41,8 @@ class CookieMsalTokenCacheTest {
 
     // ── MSAL cache JSON that is realistic but compact enough for cookie storage
     private static final String MINIMAL_MSAL_CACHE_JSON = "{\"AccessToken\":{},\"RefreshToken\":{},\"IdToken\":{},\"Account\":{}}";
+    // Only RefreshToken + Account are persisted to the cookie; other sections are stripped
+    private static final String FILTERED_MSAL_CACHE_JSON = "{\"RefreshToken\":{},\"Account\":{}}";
 
     @Mock private AuthCookieService authCookieService;
     @Mock private ITokenCacheAccessContext context;
@@ -104,7 +106,7 @@ class CookieMsalTokenCacheTest {
 
             cache.beforeCacheAccess(context);
 
-            verify(tokenCache).deserialize(MINIMAL_MSAL_CACHE_JSON);
+            verify(tokenCache).deserialize(FILTERED_MSAL_CACHE_JSON);
         }
 
         @Test
@@ -242,7 +244,35 @@ class CookieMsalTokenCacheTest {
 
             cache.beforeCacheAccess(context);
 
-            verify(tokenCache).deserialize(MINIMAL_MSAL_CACHE_JSON);
+            verify(tokenCache).deserialize(FILTERED_MSAL_CACHE_JSON);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // retainPersistedSections
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Nested
+    class RetainPersistedSections {
+
+        @Test
+        void keepsOnlyRefreshTokenAndAccount() throws Exception {
+            String filtered = CookieMsalTokenCache.retainPersistedSections(MINIMAL_MSAL_CACHE_JSON);
+            assertEquals(FILTERED_MSAL_CACHE_JSON, filtered);
+        }
+
+        @Test
+        void handlesJsonWithNoMatchingSections() throws Exception {
+            String json = "{\"AccessToken\":{},\"IdToken\":{}}";
+            String filtered = CookieMsalTokenCache.retainPersistedSections(json);
+            assertEquals("{}", filtered);
+        }
+
+        @Test
+        void handlesJsonWithOnlyRefreshToken() throws Exception {
+            String json = "{\"RefreshToken\":{\"key\":\"value\"}}";
+            String filtered = CookieMsalTokenCache.retainPersistedSections(json);
+            assertEquals("{\"RefreshToken\":{\"key\":\"value\"}}", filtered);
         }
     }
 
