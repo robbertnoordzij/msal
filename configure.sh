@@ -118,6 +118,9 @@ spring.application.name=msal-bff
 # Server Configuration
 server.port=${BACKEND_PORT:-8080}
 server.servlet.context-path=${BACKEND_CONTEXT_PATH:-/api}
+# Room for the chunked MSAL_TOKEN_CACHE cookie (idToken + accessToken + refreshToken)
+# to travel in the request headers when app.token-cache.type=cookie.
+server.max-http-header-size=${MAX_HTTP_HEADER_SIZE:-48KB}
 
 # Azure AD — single source of truth
 app.azure-ad.tenant-id=$AZURE_TENANT_ID

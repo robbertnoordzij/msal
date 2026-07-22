@@ -154,6 +154,16 @@ test.describe('Cookie-mode token cache', () => {
   );
 
   /**
+   * The MSAL cache is stored across a chunked cookie scheme:
+   *   - MSAL_TOKEN_CACHE          → the value, or a "chunks-N" marker
+   *   - MSAL_TOKEN_CACHE_1 … _N   → the chunks when the payload is large
+   * Return every cookie belonging to the cache (base + chunks).
+   */
+  function msalCacheCookies(cookies) {
+    return cookies.filter(c => c.name === MSAL_CACHE_COOKIE || c.name.startsWith(`${MSAL_CACHE_COOKIE}_`));
+  }
+
+  /**
    * Perform the full Azure AD login flow and return the authenticated page.
    * Shared across the cookie-mode tests.
    */
@@ -176,12 +186,15 @@ test.describe('Cookie-mode token cache', () => {
     await performLogin(page);
 
     const cookies = await page.context().cookies();
-    const msalCacheCookie = cookies.find(c => c.name === MSAL_CACHE_COOKIE);
+    const cacheCookies = msalCacheCookies(cookies);
 
-    expect(msalCacheCookie).toBeDefined();
-    expect(msalCacheCookie.httpOnly).toBe(true);
-    expect(msalCacheCookie.sameSite).toBe('Strict');
-    expect(msalCacheCookie.value).not.toBe('');
+    expect(cacheCookies.length).toBeGreaterThan(0);
+    // Every chunk (and the base cookie) must be HttpOnly + SameSite=Strict + non-empty
+    for (const c of cacheCookies) {
+      expect(c.httpOnly).toBe(true);
+      expect(c.sameSite).toBe('Strict');
+      expect(c.value).not.toBe('');
+    }
   });
 
   test('MSAL_TOKEN_CACHE cookie is not readable by JavaScript (HTTP-only enforcement)', async ({ page }) => {
@@ -198,14 +211,17 @@ test.describe('Cookie-mode token cache', () => {
     await performLogin(page);
 
     const cookies = await page.context().cookies();
-    const msalCacheCookie = cookies.find(c => c.name === MSAL_CACHE_COOKIE);
+    const cacheCookies = msalCacheCookies(cookies);
 
-    expect(msalCacheCookie).toBeDefined();
-    // Raw MSAL cache JSON always starts with '{'; the encrypted+compressed blob must not
-    expect(msalCacheCookie.value).not.toContain('{');
-    // Must not expose token type labels
-    expect(msalCacheCookie.value).not.toContain('RefreshToken');
-    expect(msalCacheCookie.value).not.toContain('AccessToken');
+    expect(cacheCookies.length).toBeGreaterThan(0);
+    for (const c of cacheCookies) {
+      // Raw MSAL cache JSON always starts with '{'; the encrypted+compressed blob must not
+      expect(c.value).not.toContain('{');
+      // Must not expose token type labels
+      expect(c.value).not.toContain('RefreshToken');
+      expect(c.value).not.toContain('AccessToken');
+      expect(c.value).not.toContain('IdToken');
+    }
   });
 
   test('MSAL_TOKEN_CACHE cookie is cleared on logout', async ({ page }) => {
@@ -213,31 +229,31 @@ test.describe('Cookie-mode token cache', () => {
 
     // Verify it exists before logout
     const cookiesBefore = await page.context().cookies();
-    expect(cookiesBefore.find(c => c.name === MSAL_CACHE_COOKIE)).toBeDefined();
+    expect(msalCacheCookies(cookiesBefore).length).toBeGreaterThan(0);
 
     // Log out
     await page.getByRole('button', { name: /Sign Out/i }).click();
 
     const cookiesAfter = await page.context().cookies();
-    const msalCookieAfter = cookiesAfter.find(c => c.name === MSAL_CACHE_COOKIE);
-    expect(msalCookieAfter).toBeUndefined();
+    expect(msalCacheCookies(cookiesAfter).length).toBe(0);
   });
 
   test('Silent token refresh still works and updates MSAL_TOKEN_CACHE cookie', async ({ page }) => {
     await performLogin(page);
 
     const cookiesBefore = await page.context().cookies();
-    const msalCookieBefore = cookiesBefore.find(c => c.name === MSAL_CACHE_COOKIE);
-    expect(msalCookieBefore).toBeDefined();
+    expect(msalCacheCookies(cookiesBefore).length).toBeGreaterThan(0);
 
     // Trigger a protected API call which exercises the silent-refresh path
     await page.getByRole('button', { name: /Call Hello Endpoint/i }).click();
     await expect(page.getByText(/API Response/i)).toBeVisible({ timeout: 10_000 });
 
-    // The MSAL_TOKEN_CACHE cookie must still be present (and may have been refreshed)
+    // The MSAL_TOKEN_CACHE cookie(s) must still be present (and may have been refreshed)
     const cookiesAfter = await page.context().cookies();
-    const msalCookieAfter = cookiesAfter.find(c => c.name === MSAL_CACHE_COOKIE);
-    expect(msalCookieAfter).toBeDefined();
-    expect(msalCookieAfter.httpOnly).toBe(true);
+    const cacheCookies = msalCacheCookies(cookiesAfter);
+    expect(cacheCookies.length).toBeGreaterThan(0);
+    for (const c of cacheCookies) {
+      expect(c.httpOnly).toBe(true);
+    }
   });
 });

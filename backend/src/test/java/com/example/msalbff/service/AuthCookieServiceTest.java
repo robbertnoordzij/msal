@@ -168,8 +168,9 @@ class AuthCookieServiceTest {
 
     @Test
     void setMsalCacheCookie_writesHttpOnlySameSiteStrictCookie() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authCookieService.setMsalCacheCookie(response, "encrypted-blob");
+        authCookieService.setMsalCacheCookie(request, response, "encrypted-blob");
 
         String header = response.getHeader("Set-Cookie");
         assertNotNull(header, "Set-Cookie header must be present");
@@ -180,14 +181,115 @@ class AuthCookieServiceTest {
     }
 
     @Test
-    void clearMsalCacheCookie_setsMaxAgeZero() {
+    void setMsalCacheCookie_writesSingleCookie_whenValueFitsInOneChunk() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
         MockHttpServletResponse response = new MockHttpServletResponse();
-        authCookieService.clearMsalCacheCookie(response);
+        authCookieService.setMsalCacheCookie(request, response, "small-value");
+
+        var headers = response.getHeaders("Set-Cookie");
+        assertEquals(1, headers.size(), "A small value must produce exactly one cookie");
+        assertTrue(headers.get(0).contains("MSAL_TOKEN_CACHE=small-value"));
+    }
+
+    @Test
+    void setMsalCacheCookie_splitsIntoChunks_whenValueExceedsChunkSize() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        String largeValue = "x".repeat(AuthCookieService.CHUNK_SIZE_BYTES * 2 + 100);
+
+        authCookieService.setMsalCacheCookie(request, response, largeValue);
+
+        var headers = response.getHeaders("Set-Cookie");
+        // marker + 3 chunk cookies
+        assertEquals(4, headers.size(), "Should write a marker cookie plus 3 chunk cookies; headers: " + headers);
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE=chunks-3")),
+                "Primary cookie must carry the chunks-3 marker; headers: " + headers);
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_1=")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_2=")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_3=")));
+    }
+
+    @Test
+    void msalCacheCookie_roundTrips_singleChunk() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authCookieService.setMsalCacheCookie(request, response, "opaque-single");
+
+        MockHttpServletRequest readRequest = requestFromSetCookieHeaders(response);
+        assertEquals(Optional.of("opaque-single"), authCookieService.getMsalCacheCookie(readRequest));
+    }
+
+    @Test
+    void msalCacheCookie_roundTrips_multipleChunks() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        String largeValue = "abcde".repeat(AuthCookieService.CHUNK_SIZE_BYTES); // ~15 KB
+
+        authCookieService.setMsalCacheCookie(request, response, largeValue);
+
+        MockHttpServletRequest readRequest = requestFromSetCookieHeaders(response);
+        assertEquals(Optional.of(largeValue), authCookieService.getMsalCacheCookie(readRequest),
+                "A chunked value must reassemble byte-for-byte");
+    }
+
+    @Test
+    void getMsalCacheCookie_returnsEmpty_whenAChunkIsMissing() {
+        // Marker claims 2 chunks but only chunk 1 is present → corrupt, treat as empty
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(
+                new Cookie("MSAL_TOKEN_CACHE", "chunks-2"),
+                new Cookie("MSAL_TOKEN_CACHE_1", "part1"));
+        assertTrue(authCookieService.getMsalCacheCookie(request).isEmpty());
+    }
+
+    @Test
+    void setMsalCacheCookie_expiresStaleChunks_whenNewWriteHasFewerChunks() {
+        // Previous write left a 3-chunk cookie; the new write only needs a single cookie.
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(
+                new Cookie("MSAL_TOKEN_CACHE", "chunks-3"),
+                new Cookie("MSAL_TOKEN_CACHE_1", "a"),
+                new Cookie("MSAL_TOKEN_CACHE_2", "b"),
+                new Cookie("MSAL_TOKEN_CACHE_3", "c"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        authCookieService.setMsalCacheCookie(request, response, "now-small");
+
+        var headers = response.getHeaders("Set-Cookie");
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE=now-small")));
+        // Chunks 1..3 must be expired
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_1=") && h.contains("Max-Age=0")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_2=") && h.contains("Max-Age=0")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_3=") && h.contains("Max-Age=0")));
+    }
+
+    @Test
+    void clearMsalCacheCookie_setsMaxAgeZero() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authCookieService.clearMsalCacheCookie(request, response);
 
         String header = response.getHeader("Set-Cookie");
         assertNotNull(header, "Set-Cookie header must be present");
         assertTrue(header.contains("MSAL_TOKEN_CACHE="), "Header: " + header);
         assertTrue(header.contains("Max-Age=0"), "Must expire cookie; header: " + header);
+    }
+
+    @Test
+    void clearMsalCacheCookie_expiresAllChunkCookies() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(
+                new Cookie("MSAL_TOKEN_CACHE", "chunks-2"),
+                new Cookie("MSAL_TOKEN_CACHE_1", "a"),
+                new Cookie("MSAL_TOKEN_CACHE_2", "b"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        authCookieService.clearMsalCacheCookie(request, response);
+
+        var headers = response.getHeaders("Set-Cookie");
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE=") && h.contains("Max-Age=0")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_1=") && h.contains("Max-Age=0")));
+        assertTrue(headers.stream().anyMatch(h -> h.contains("MSAL_TOKEN_CACHE_2=") && h.contains("Max-Age=0")));
     }
 
     @Test
@@ -201,5 +303,21 @@ class AuthCookieServiceTest {
     void getMsalCacheCookie_returnsNull_whenCookieAbsent() {
         MockHttpServletRequest request = new MockHttpServletRequest();
         assertTrue(authCookieService.getMsalCacheCookie(request).isEmpty());
+    }
+
+    /**
+     * Builds a request whose cookies mirror the {@code Set-Cookie} headers a response wrote,
+     * so a write can be round-tripped through a subsequent read.
+     */
+    private static MockHttpServletRequest requestFromSetCookieHeaders(MockHttpServletResponse response) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        var cookies = response.getHeaders("Set-Cookie").stream()
+                .map(h -> h.split(";", 2)[0])
+                .map(nv -> nv.split("=", 2))
+                .filter(nv -> nv.length == 2 && !nv[1].isEmpty())
+                .map(nv -> new Cookie(nv[0], nv[1]))
+                .toArray(Cookie[]::new);
+        request.setCookies(cookies);
+        return request;
     }
 }

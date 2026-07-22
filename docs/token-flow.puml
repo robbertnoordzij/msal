@@ -20,8 +20,10 @@ note over Redis, CookieCache
     Clustered deployments; cache lives server-side.
   **Option B — Cookie**: app.token-cache.type=cookie
     Single-instance / no-Redis deployments; cache stored in
-    an AES-256-GCM-encrypted HTTP-only cookie (MSAL_TOKEN_CACHE).
-    Only RefreshToken + Account sections are persisted.
+    AES-256-GCM-encrypted HTTP-only cookie(s) (MSAL_TOKEN_CACHE).
+    RefreshToken + Account + IdToken + AccessToken are persisted
+    (IdToken survives restarts; AccessToken enables the OBO flow).
+    Large payloads are split across chunk cookies (MSAL_TOKEN_CACHE_1..N).
 end note
 
 == Authentication Flow ==
@@ -49,8 +51,8 @@ alt Option A — Redis cache
     TES -> Redis : afterCacheAccess: write encrypted MSAL cache\n(key: msal:token-cache:{oid.tid}, AES-256-GCM)
     note right of Redis : Per-user isolation by homeAccountId (oid.tid).\nShared across all BFF replicas in the cluster.
 else Option B — Cookie cache
-    TES -> CookieCache : afterCacheAccess: write MSAL_TOKEN_CACHE cookie\n(AES-256-GCM encrypted, HttpOnly, SameSite=Strict)
-    note right of CookieCache : Only RefreshToken + Account sections stored.\nPayload ≈ 300–800 bytes after compress + encrypt.\nBound to this browser — no clustering.
+    TES -> CookieCache : afterCacheAccess: write MSAL_TOKEN_CACHE cookie(s)\n(AES-256-GCM encrypted, HttpOnly, SameSite=Strict, chunked)
+    note right of CookieCache : RefreshToken + Account + IdToken + AccessToken stored.\nAccessToken enables the on-behalf-of flow.\nPayload split across MSAL_TOKEN_CACHE_1..N when > ~4 KB.\nBound to this browser — travels to every replica.
 end
 
 TES -> AC : IAuthenticationResult
@@ -86,7 +88,7 @@ alt Option A — Redis cache
 else Option B — Cookie cache
     TES -> CookieCache : beforeCacheAccess: read MSAL_TOKEN_CACHE cookie\n(decrypt AES-256-GCM, decompress, deserialize)
     note right of CookieCache : Decryption errors (key rotation, tampered)\nare logged and treated as empty cache.
-    CookieCache -> TES : Cached MSAL token JSON (RefreshToken + Account)
+    CookieCache -> TES : Cached MSAL token JSON (RefreshToken + Account + IdToken + AccessToken)
 end
 
 TES -> TES : Look up IAccount from deserialized cache
@@ -128,7 +130,7 @@ alt Option A — Redis cache
     AC -> Redis : Evict cache entry (DELETE msal:token-cache:{oid.tid})
     note right of Redis : Immediate invalidation — prevents\nevicted refresh token being reused\non any pod in the cluster.
 else Option B — Cookie cache
-    AC -> CookieCache : clearMsalCacheCookie (Max-Age=0)
+    AC -> CookieCache : clearMsalCacheCookie (Max-Age=0 on base + all chunk cookies)
     note right of CookieCache : Browser deletes MSAL_TOKEN_CACHE immediately.\nNext request with this browser cannot restore session.
 end
 

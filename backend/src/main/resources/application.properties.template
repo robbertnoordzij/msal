@@ -13,6 +13,10 @@ spring.application.name=msal-bff
 # Server Configuration
 server.port=8080
 server.servlet.context-path=/api
+# Room for the chunked MSAL_TOKEN_CACHE cookie (idToken + accessToken + refreshToken)
+# to travel in request headers when app.token-cache.type=cookie. Raise if you persist
+# many/large access-token scopes.
+server.max-http-header-size=48KB
 
 # Azure AD Configuration - VALUES FROM .env
 # Legacy keys for JWT validation (kept for resource server validation)
@@ -84,6 +88,10 @@ app.redis.encryption-key=
 # app.token-cache.cookie.encryption-key=
 # app.token-cache.cookie.name=MSAL_TOKEN_CACHE
 # app.token-cache.cookie.max-age=90d
+# The persisted cache holds RefreshToken + Account + IdToken + AccessToken (the last two
+# enable ID-token persistence and the on-behalf-of flow). The encrypted payload is split
+# across chunk cookies (MSAL_TOKEN_CACHE_1 … _N) so it never overflows the ~4 KB per-cookie
+# limit; ensure server.max-http-header-size (above) is large enough for all chunks.
 
 # Logging - VALUES FROM .env
 logging.level.com.example=DEBUG

@@ -41,8 +41,9 @@ class CookieMsalTokenCacheTest {
 
     // ── MSAL cache JSON that is realistic but compact enough for cookie storage
     private static final String MINIMAL_MSAL_CACHE_JSON = "{\"AccessToken\":{},\"RefreshToken\":{},\"IdToken\":{},\"Account\":{}}";
-    // Only RefreshToken + Account are persisted to the cookie; other sections are stripped
-    private static final String FILTERED_MSAL_CACHE_JSON = "{\"RefreshToken\":{},\"Account\":{}}";
+    // RefreshToken + Account + IdToken + AccessToken are persisted (in PERSISTED_CACHE_SECTIONS order);
+    // other sections (e.g. AppMetadata) are stripped.
+    private static final String FILTERED_MSAL_CACHE_JSON = "{\"RefreshToken\":{},\"Account\":{},\"IdToken\":{},\"AccessToken\":{}}";
 
     @Mock private AuthCookieService authCookieService;
     @Mock private ITokenCacheAccessContext context;
@@ -169,7 +170,7 @@ class CookieMsalTokenCacheTest {
 
             cache.afterCacheAccess(context);
 
-            verify(authCookieService, never()).setMsalCacheCookie(any(), any());
+            verify(authCookieService, never()).setMsalCacheCookie(any(), any(), any());
         }
 
         @Test
@@ -182,7 +183,7 @@ class CookieMsalTokenCacheTest {
             cache.afterCacheAccess(context);
 
             ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
-            verify(authCookieService).setMsalCacheCookie(eq(response), valueCaptor.capture());
+            verify(authCookieService).setMsalCacheCookie(any(), eq(response), valueCaptor.capture());
             assertFalse(valueCaptor.getValue().isBlank(), "Encrypted cookie value must not be blank");
         }
 
@@ -196,7 +197,7 @@ class CookieMsalTokenCacheTest {
             cache.afterCacheAccess(context);
 
             ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
-            verify(authCookieService).setMsalCacheCookie(eq(response), valueCaptor.capture());
+            verify(authCookieService).setMsalCacheCookie(any(), eq(response), valueCaptor.capture());
             String cookieValue = valueCaptor.getValue();
             // Must not contain raw JSON (it is encrypted)
             assertFalse(cookieValue.contains("{"), "Cookie must not contain raw JSON");
@@ -210,9 +211,10 @@ class CookieMsalTokenCacheTest {
             when(context.tokenCache()).thenReturn(tokenCache);
             // Use random-looking (high-entropy) data to defeat GZIP compression.
             // A Base64-encoded block of pseudo-random bytes does not compress and
-            // guarantees the final encrypted cookie value exceeds MAX_COOKIE_VALUE_BYTES.
+            // guarantees the final encrypted payload exceeds MAX_TOTAL_VALUE_BYTES
+            // (the combined budget across all chunk cookies).
             java.util.Random rng = new java.util.Random(0L);
-            byte[] randomBytes = new byte[3000];
+            byte[] randomBytes = new byte[40000];
             rng.nextBytes(randomBytes);
             String largeHighEntropyJson =
                     "{\"RefreshToken\":\"" + java.util.Base64.getEncoder().encodeToString(randomBytes) + "\"}";
@@ -220,7 +222,7 @@ class CookieMsalTokenCacheTest {
 
             cache.afterCacheAccess(context);
 
-            verify(authCookieService, never()).setMsalCacheCookie(any(), any());
+            verify(authCookieService, never()).setMsalCacheCookie(any(), any(), any());
         }
 
         @Test
@@ -234,7 +236,7 @@ class CookieMsalTokenCacheTest {
             cache.afterCacheAccess(context);
 
             ArgumentCaptor<String> valueCaptor = ArgumentCaptor.forClass(String.class);
-            verify(authCookieService).setMsalCacheCookie(eq(response), valueCaptor.capture());
+            verify(authCookieService).setMsalCacheCookie(any(), eq(response), valueCaptor.capture());
             String cookieValue = valueCaptor.getValue();
 
             // Read phase — inject the written value back as the incoming cookie
@@ -256,14 +258,14 @@ class CookieMsalTokenCacheTest {
     class RetainPersistedSections {
 
         @Test
-        void keepsOnlyRefreshTokenAndAccount() throws Exception {
+        void keepsRefreshTokenAccountIdTokenAndAccessToken() throws Exception {
             String filtered = CookieMsalTokenCache.retainPersistedSections(MINIMAL_MSAL_CACHE_JSON);
             assertEquals(FILTERED_MSAL_CACHE_JSON, filtered);
         }
 
         @Test
         void handlesJsonWithNoMatchingSections() throws Exception {
-            String json = "{\"AccessToken\":{},\"IdToken\":{}}";
+            String json = "{\"AppMetadata\":{}}";
             String filtered = CookieMsalTokenCache.retainPersistedSections(json);
             assertEquals("{}", filtered);
         }
@@ -289,7 +291,7 @@ class CookieMsalTokenCacheTest {
 
             cache.evict("some-oid.some-tid");
 
-            verify(authCookieService).clearMsalCacheCookie(response);
+            verify(authCookieService).clearMsalCacheCookie(any(), eq(response));
         }
 
         @Test
@@ -302,7 +304,7 @@ class CookieMsalTokenCacheTest {
 
             assertDoesNotThrow(() -> cache.evict("some-oid.some-tid"));
 
-            verify(authCookieService, never()).clearMsalCacheCookie(any());
+            verify(authCookieService, never()).clearMsalCacheCookie(any(), any());
         }
     }
 
@@ -327,7 +329,7 @@ class CookieMsalTokenCacheTest {
         when(ctx.hasCacheChanged()).thenReturn(true);
         when(ctx.tokenCache()).thenReturn(tc);
         when(tc.serialize()).thenReturn(json);
-        doNothing().when(authCookieService).setMsalCacheCookie(any(), captor.capture());
+        doNothing().when(authCookieService).setMsalCacheCookie(any(), any(), captor.capture());
 
         cache.afterCacheAccess(ctx);
 

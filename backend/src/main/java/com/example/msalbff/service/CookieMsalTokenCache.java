@@ -31,12 +31,14 @@ import java.util.zip.GZIPOutputStream;
  * <h3>Storage pipeline (write)</h3>
  * <ol>
  *   <li>Serialize the MSAL token cache to JSON.</li>
- *   <li>GZIP-compress the JSON (reduces typical 2–5 KB payloads to well under the
- *       4 096-byte cookie limit).</li>
+ *   <li>GZIP-compress the JSON (reduces typical payloads substantially before encryption).</li>
  *   <li>Encrypt with AES-256-GCM; a fresh 12-byte IV and 128-bit authentication tag
  *       are prepended to the ciphertext.</li>
- *   <li>Base64-encode the result and set it as an HTTP-only, {@code SameSite=Strict}
- *       cookie named {@code MSAL_TOKEN_CACHE} (configurable).</li>
+ *   <li>Base64-encode the result and write it to one or more HTTP-only,
+ *       {@code SameSite=Strict} cookies named {@code MSAL_TOKEN_CACHE} (configurable). Large
+ *       payloads are split across chunk cookies ({@code MSAL_TOKEN_CACHE_1 … _N}) by
+ *       {@link AuthCookieService}, so the persisted cache is never dropped for exceeding the
+ *       ~4 KB single-cookie limit.</li>
  * </ol>
  *
  * <h3>Storage pipeline (read)</h3>
@@ -51,9 +53,11 @@ import java.util.zip.GZIPOutputStream;
  *       their own browser cookie, not shared across nodes.</li>
  *   <li><strong>Key rotation</strong> — rotating {@code app.token-cache.cookie.encryption-key}
  *       immediately invalidates all existing cache cookies. Affected users must re-authenticate.</li>
- *   <li><strong>Cookie size</strong> — if the encrypted payload exceeds
- *       {@value #MAX_COOKIE_VALUE_BYTES} bytes, the write is skipped and an error is logged.
- *       Users can re-authenticate on the next request.</li>
+ *   <li><strong>Cookie size</strong> — the encrypted payload is split across up to
+ *       {@value AuthCookieService#MAX_CHUNKS} chunk cookies. If it would exceed
+ *       {@link #MAX_TOTAL_VALUE_BYTES} bytes in total the write is skipped and an error is
+ *       logged; the user re-authenticates on the next request. Raise
+ *       {@code server.max-http-header-size} if you need a larger budget.</li>
  * </ul>
  *
  * <p>Active when {@code app.token-cache.type=cookie}. For clustered deployments use
@@ -66,18 +70,30 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
     private static final Logger logger = LoggerFactory.getLogger(CookieMsalTokenCache.class);
 
     /**
-     * Maximum cookie value size in bytes. RFC 6265 mandates browsers to support at least
-     * 4 096 bytes per cookie (name + value + attributes). We use a slightly lower threshold
-     * to leave room for the cookie name and attribute string.
+     * Maximum total size in bytes of the encrypted payload spread across all chunk cookies.
+     * The chunked cookie writer ({@link AuthCookieService}) splits the value into
+     * {@value AuthCookieService#CHUNK_SIZE_BYTES}-byte cookies, up to
+     * {@value AuthCookieService#MAX_CHUNKS} chunks. This ceiling keeps the combined cookie
+     * headers within a typical {@code server.max-http-header-size} budget (raise that setting
+     * if you increase this value).
      */
-    static final int MAX_COOKIE_VALUE_BYTES = 4090;
+    static final int MAX_TOTAL_VALUE_BYTES =
+            AuthCookieService.CHUNK_SIZE_BYTES * AuthCookieService.MAX_CHUNKS;
 
     /**
-     * Only these sections of the MSAL token cache are persisted to the cookie.
-     * Access tokens and ID tokens are intentionally omitted — they can be re-acquired
-     * from the refresh token and would bloat the cookie beyond the 4 KB browser limit.
+     * Sections of the MSAL token cache persisted to the cookie.
+     * <ul>
+     *   <li>{@code RefreshToken} + {@code Account} — required for silent refresh / session restore.</li>
+     *   <li>{@code IdToken} — persisted so the user's ID token survives restarts.</li>
+     *   <li>{@code AccessToken} — persisted so the on-behalf-of (OBO) flow has a user access
+     *       token to present as its {@code UserAssertion} without a fresh round-trip.</li>
+     * </ul>
+     * {@code AppMetadata} is intentionally omitted. The chunked cookie writer
+     * ({@link AuthCookieService#setMsalCacheCookie}) removes the single-cookie 4 KB ceiling,
+     * so persisting the larger token sections no longer risks a dropped write.
      */
-    private static final List<String> PERSISTED_CACHE_SECTIONS = List.of("RefreshToken", "Account");
+    private static final List<String> PERSISTED_CACHE_SECTIONS =
+            List.of("RefreshToken", "Account", "IdToken", "AccessToken");
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -146,12 +162,10 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
     }
 
     /**
-     * Strips sections not needed for silent refresh ({@code AccessToken}, {@code IdToken},
-     * {@code AppMetadata}) from the MSAL cache JSON before it is stored in the cookie.
-     * Only {@code RefreshToken} and {@code Account} are retained.
-     *
-     * <p>This keeps the encrypted payload well within the 4 KB cookie limit regardless
-     * of how many access-token scopes the user has requested.
+     * Strips sections not needed for the persisted cache ({@code AppMetadata}) from the MSAL
+     * cache JSON before it is stored in the cookie. {@code RefreshToken}, {@code Account},
+     * {@code IdToken} and {@code AccessToken} are retained — the latter two enable ID-token
+     * persistence and the on-behalf-of flow respectively.
      */
     static String retainPersistedSections(String json) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(json);
@@ -166,24 +180,25 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
 
     private boolean exceedsCookieSizeLimit(String cookieValue) {
         int byteLength = cookieValue.getBytes(StandardCharsets.UTF_8).length;
-        if (byteLength > MAX_COOKIE_VALUE_BYTES) {
+        if (byteLength > MAX_TOTAL_VALUE_BYTES) {
             logger.error(
-                    "MSAL token cache cookie would exceed {} bytes ({} bytes after encryption); "
-                    + "skipping write to prevent a truncated/corrupt cookie. "
-                    + "Consider switching to the Redis-backed cache for accounts with many tokens.",
-                    MAX_COOKIE_VALUE_BYTES, byteLength);
+                    "MSAL token cache would exceed {} bytes ({} bytes after encryption) across "
+                    + "{} chunk cookies; skipping write to stay within the HTTP header size limit. "
+                    + "Consider raising server.max-http-header-size or reducing the persisted token scopes.",
+                    MAX_TOTAL_VALUE_BYTES, byteLength, AuthCookieService.MAX_CHUNKS);
             return true;
         }
         return false;
     }
 
     private void writeCookieToResponse(String cookieValue) {
-        HttpServletResponse response = currentRequestAttributes().getResponse();
+        ServletRequestAttributes attrs = currentRequestAttributes();
+        HttpServletResponse response = attrs.getResponse();
         if (response == null) {
             logger.warn("Cannot persist MSAL token cache: no HTTP response available in current context");
             return;
         }
-        authCookieService.setMsalCacheCookie(response, cookieValue);
+        authCookieService.setMsalCacheCookie(attrs.getRequest(), response, cookieValue);
         logger.debug("Persisted MSAL token cache to cookie");
     }
 
@@ -203,7 +218,7 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
                 logger.warn("Cannot evict MSAL token cache cookie: no HTTP response in current context");
                 return;
             }
-            authCookieService.clearMsalCacheCookie(response);
+            authCookieService.clearMsalCacheCookie(attrs.getRequest(), response);
             logger.info("Evicted MSAL token cache cookie on logout");
         } catch (Exception e) {
             logger.error("Failed to evict MSAL token cache cookie: {}", e.getMessage());

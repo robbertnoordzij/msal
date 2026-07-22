@@ -11,7 +11,7 @@ These instructions enable a Copilot instance to implement the **Backend-for-Fron
 > "Which token cache backend would you like to use for storing MSAL refresh tokens?
 >
 > - **Option A: Redis** *(default)* — requires a Redis instance (Docker locally, Azure Cache for Redis in production). Best for clustered / multi-replica deployments where all pods share the same cache.
-> - **Option B: Cookie** — no external infrastructure required. The encrypted refresh token is stored in an AES-256-GCM encrypted HTTP-only cookie (`MSAL_TOKEN_CACHE`). Best for single-instance / no-Redis deployments."
+> - **Option B: Cookie** — no external infrastructure required. The encrypted MSAL cache (refresh token + account + ID token + access token) is stored in AES-256-GCM encrypted HTTP-only cookie(s) (`MSAL_TOKEN_CACHE`, chunked as `MSAL_TOKEN_CACHE_1..N` when large). Works for both single-instance **and** multi-replica (AKS) deployments — the browser carries the cache to every pod, so no shared server state is needed. Persisting the access token also enables the on-behalf-of (OBO) flow."
 
 Record the answer and follow the sections marked **[Redis only]** or **[Cookie only]** throughout this guide. Sections with no tag apply to both.
 
@@ -31,7 +31,7 @@ Azure Entra ID (Azure AD)
 Spring Boot BFF  (token cache — choose one)
     │  AES-256-GCM encrypted MSAL cache per user
     ├─[Redis]──▶ Redis  (key: msal:token-cache:{oid.tid})
-    └─[Cookie]─▶ MSAL_TOKEN_CACHE cookie (HttpOnly, SameSite=Strict)
+    └─[Cookie]─▶ MSAL_TOKEN_CACHE cookie(s) (HttpOnly, SameSite=Strict, chunked)
 ```
 
 **Key security properties (both backends):**
@@ -42,7 +42,7 @@ Spring Boot BFF  (token cache — choose one)
 - `SameSite=Strict` on `AUTH_TOKEN` provides CSRF protection; `SameSite=Lax` on OAuth flow cookies is required so the Azure AD redirect carries them back.
 
 **Cookie cache additional notes:**
-- Only the `RefreshToken` and `Account` sections of the MSAL cache are stored in the cookie (access tokens and ID tokens are stripped to keep the payload within the 4 KB browser cookie limit).
+- The `RefreshToken`, `Account`, `IdToken` and `AccessToken` sections of the MSAL cache are stored in the cookie (`AppMetadata` is stripped). Persisting the ID and access tokens lets the ID token survive restarts and enables the on-behalf-of flow. The encrypted payload is split across chunk cookies (`MSAL_TOKEN_CACHE_1..N`) so it never overflows the ~4 KB per-cookie browser limit.
 - Cookie cache is bound to the user's browser — no clustering support.
 - Requires a unique `app.token-cache.cookie.encryption-key` (startup fails if absent).
 
@@ -195,6 +195,9 @@ app.token-cache.cookie.encryption-key=${TOKEN_CACHE_COOKIE_ENCRYPTION_KEY:}
 app.token-cache.cookie.name=MSAL_TOKEN_CACHE
 app.token-cache.cookie.max-age=90d
 app.token-cache.cookie.secure=${COOKIE_SECURE:true}
+# [Cookie only] The chunked cache cookie (idToken + accessToken + refreshToken) must fit
+# in the request headers. Raise if you persist many/large access-token scopes.
+server.max-http-header-size=48KB
 ```
 
 ### 3. Source Files to Create
@@ -499,13 +502,20 @@ Implements `MsalTokenCacheService`. Guard with `@ConditionalOnProperty`. Require
 @ConditionalOnProperty(name = "app.token-cache.type", havingValue = "cookie")
 public class CookieMsalTokenCache implements MsalTokenCacheService {
 
-    static final int MAX_COOKIE_VALUE_BYTES = 4090;
+    /**
+     * Total encrypted-payload budget across all chunk cookies
+     * (AuthCookieService.CHUNK_SIZE_BYTES * AuthCookieService.MAX_CHUNKS).
+     */
+    static final int MAX_TOTAL_VALUE_BYTES =
+        AuthCookieService.CHUNK_SIZE_BYTES * AuthCookieService.MAX_CHUNKS;
 
     /**
-     * Only these sections are persisted to the cookie.
-     * AccessToken / IdToken / AppMetadata are stripped to stay within the 4 KB limit.
+     * Sections persisted to the cookie. IdToken + AccessToken are kept so the ID token
+     * survives restarts and the on-behalf-of flow has a user access token; AppMetadata is
+     * stripped. The chunked cookie writer removes the single-cookie 4 KB ceiling.
      */
-    private static final List<String> PERSISTED_CACHE_SECTIONS = List.of("RefreshToken", "Account");
+    private static final List<String> PERSISTED_CACHE_SECTIONS =
+        List.of("RefreshToken", "Account", "IdToken", "AccessToken");
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AuthCookieService authCookieService;
@@ -542,13 +552,15 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
         try {
             String slimJson = retainPersistedSections(context.tokenCache().serialize());
             String cookieValue = encryption.encrypt(compressAndEncode(slimJson));
-            if (cookieValue.getBytes(StandardCharsets.UTF_8).length > MAX_COOKIE_VALUE_BYTES) {
-                logger.error("MSAL token cache cookie would exceed {} bytes; skipping write. "
-                    + "Consider switching to Redis.", MAX_COOKIE_VALUE_BYTES);
+            if (cookieValue.getBytes(StandardCharsets.UTF_8).length > MAX_TOTAL_VALUE_BYTES) {
+                logger.error("MSAL token cache would exceed {} bytes across all chunks; skipping write. "
+                    + "Raise server.max-http-header-size or reduce persisted scopes.", MAX_TOTAL_VALUE_BYTES);
                 return;
             }
-            HttpServletResponse response = currentRequestAttributes().getResponse();
-            if (response != null) authCookieService.setMsalCacheCookie(response, cookieValue);
+            ServletRequestAttributes attrs = currentRequestAttributes();
+            HttpServletResponse response = attrs.getResponse();
+            // Chunked write: splits into MSAL_TOKEN_CACHE + _1.._N and expires stale chunks.
+            if (response != null) authCookieService.setMsalCacheCookie(attrs.getRequest(), response, cookieValue);
         } catch (Exception e) {
             logger.warn("Failed to persist MSAL token cache to cookie: {}", e.getMessage());
         }
@@ -557,14 +569,15 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
     @Override
     public void evict(String homeAccountId) {
         try {
-            HttpServletResponse response = currentRequestAttributes().getResponse();
-            if (response != null) authCookieService.clearMsalCacheCookie(response);
+            ServletRequestAttributes attrs = currentRequestAttributes();
+            HttpServletResponse response = attrs.getResponse();
+            if (response != null) authCookieService.clearMsalCacheCookie(attrs.getRequest(), response);
         } catch (Exception e) {
             logger.error("Failed to evict MSAL token cache cookie: {}", e.getMessage());
         }
     }
 
-    /** Keeps only RefreshToken + Account sections; strips AccessToken, IdToken, AppMetadata. */
+    /** Keeps RefreshToken + Account + IdToken + AccessToken sections; strips AppMetadata. */
     static String retainPersistedSections(String json) throws IOException {
         JsonNode root = OBJECT_MAPPER.readTree(json);
         ObjectNode slim = OBJECT_MAPPER.createObjectNode();
@@ -585,13 +598,13 @@ public class CookieMsalTokenCache implements MsalTokenCacheService {
 **`AuthCookieService` additions** — add these three methods to `AuthCookieService` to handle the MSAL cache cookie:
 
 ```java
-/** Writes the encrypted MSAL cache as an HttpOnly cookie. */
-public void setMsalCacheCookie(HttpServletResponse response, String encryptedValue) { ... }
+/** Writes the encrypted MSAL cache across one or more chunked HttpOnly cookies. */
+public void setMsalCacheCookie(HttpServletRequest request, HttpServletResponse response, String encryptedValue) { ... }
 
-/** Clears the MSAL cache cookie (Max-Age=0). */
-public void clearMsalCacheCookie(HttpServletResponse response) { ... }
+/** Clears the MSAL cache cookie and all chunk cookies (Max-Age=0). */
+public void clearMsalCacheCookie(HttpServletRequest request, HttpServletResponse response) { ... }
 
-/** Returns the MSAL cache cookie value, or empty if absent. */
+/** Reassembles and returns the MSAL cache cookie value from its chunks, or empty if absent. */
 public Optional<String> getMsalCacheCookie(HttpServletRequest request) { ... }
 ```
 
@@ -1177,7 +1190,9 @@ With this setup, browser requests to `https://myapp.example.com/api/auth/login` 
    → Backend exchanges code + verifier for tokens via MSAL4J
    → ID token stored in AUTH_TOKEN cookie (HttpOnly, Secure, SameSite=Strict)
    → [Redis]  Refresh token stored encrypted in Redis — never sent to browser
-   → [Cookie] Refresh token stored encrypted in MSAL_TOKEN_CACHE cookie — HttpOnly
+   → [Cookie] MSAL cache (refresh + access + ID token + account) stored encrypted in
+              MSAL_TOKEN_CACHE cookie(s) — HttpOnly, chunked; access & refresh tokens
+              never exposed to JS
    → Browser redirected to /?login=success
 
 4. Subsequent API calls (e.g., GET /api/hello)
@@ -1194,7 +1209,7 @@ With this setup, browser requests to `https://myapp.example.com/api/auth/login` 
 
 6. POST /api/auth/logout
    → [Redis]  Redis cache entry evicted (refresh token invalidated immediately)
-   → [Cookie] MSAL_TOKEN_CACHE cookie cleared (Max-Age=0)
+   → [Cookie] MSAL_TOKEN_CACHE cookie + all chunk cookies cleared (Max-Age=0)
    → AUTH_TOKEN cookie cleared (Max-Age=0)
 ```
 

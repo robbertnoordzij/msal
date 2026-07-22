@@ -251,12 +251,14 @@ The cache entry is **keyed per user** by `homeAccountId` (`oid.tid`). Set `TOKEN
 
 #### Option B: Cookie (infrastructure-free — for single-instance deployments)
 
-The entire MSAL token cache is serialised, GZIP-compressed, AES-256-GCM encrypted, and stored in an additional `HttpOnly` cookie. No Redis or any other infrastructure needed.
+The entire MSAL token cache is serialised, GZIP-compressed, AES-256-GCM encrypted, and stored in one or more `HttpOnly` cookies. No Redis or any other infrastructure needed. The persisted cache retains **RefreshToken + Account + IdToken + AccessToken** — the ID token so it survives restarts, and the access token so the **on-behalf-of (OBO)** flow has a user access token available as its assertion.
 
 ```
-Browser  → every request → sends MSAL_TOKEN_CACHE cookie (encrypted, compressed)
-BFF      → decrypts + deserialises → MSAL silently refreshes → re-encrypts + updates cookie
+Browser  → every request → sends MSAL_TOKEN_CACHE cookie(s) (encrypted, compressed, chunked)
+BFF      → decrypts + deserialises → MSAL silently refreshes → re-encrypts + updates cookie(s)
 ```
+
+Because the payload can exceed the ~4 KB per-cookie limit, it is split across **chunk cookies** (`MSAL_TOKEN_CACHE`, `MSAL_TOKEN_CACHE_1 … _N`) and reassembled on read, so a write is never silently dropped. Ensure `server.max-http-header-size` (default `48KB` in the generated config) is large enough to carry every chunk.
 
 Set `TOKEN_CACHE_TYPE=cookie` and provide an encryption key.
 
@@ -265,12 +267,12 @@ Set `TOKEN_CACHE_TYPE=cookie` and provide an encryption key.
 | Concern | Mitigation |
 |---|---|
 | Refresh token at rest | AES-256-GCM with a random 12-byte IV per write. Configured via `TOKEN_CACHE_COOKIE_ENCRYPTION_KEY`. |
-| Cookie size limit | Encrypted payload is checked against 4 KB limit before writing. If exceeded, the write is skipped and a warning is logged. Switch to Redis if users have many tokens. |
+| Cookie size limit | Encrypted payload is chunked across up to 10 cookies so it never overflows a single 4 KB cookie. Only if the combined payload would exceed the header budget (`MAX_TOTAL_VALUE_BYTES`) is the write skipped and an error logged. |
 | `Secure` flag | `TOKEN_CACHE_COOKIE_SECURE=false` for local HTTP dev. Always `true` in production. |
-| Logout invalidation | `POST /auth/logout` clears the `MSAL_TOKEN_CACHE` cookie immediately. |
+| Logout invalidation | `POST /auth/logout` clears the `MSAL_TOKEN_CACHE` cookie and all chunk cookies immediately. |
 | Key rotation | Changing `TOKEN_CACHE_COOKIE_ENCRYPTION_KEY` silently invalidates all existing cookie caches; users must re-authenticate (graceful degradation — no 500). |
 
-> **When to use cookie mode:** single-instance deployments, local development without Docker, or any setup where you want to eliminate Redis as a dependency. Not suitable for horizontally-scaled (multi-replica) deployments — each browser carries its own cache island.
+> **When to use cookie mode:** deployments without Redis, including multi-replica clusters (AKS). Because the cache travels in the browser cookie, every replica receives the same per-user cache on each request — no shared server state, sticky sessions, or affinity required. **Caveat:** with concurrent requests hitting different replicas at token-expiry, refresh-token rotation can race (last write wins); centralise silent refresh and avoid firing many parallel calls right at expiry.
 
 ---
 
@@ -419,6 +421,7 @@ app.token-cache.cookie.encryption-key=<base64-key>
 app.token-cache.cookie.name=MSAL_TOKEN_CACHE        # optional, default shown
 app.token-cache.cookie.max-age=90d                  # optional, default shown
 app.token-cache.cookie.secure=true                  # set false for local HTTP dev
+server.max-http-header-size=48KB                     # must fit all cache cookie chunks
 
 # Redis cache settings (only used when type=redis)
 app.redis.host=localhost
